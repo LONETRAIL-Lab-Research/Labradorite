@@ -3,6 +3,8 @@ export default defineConfig({
 	pack: {
 		entry: {
 			"src/mcp-main": "src/mcp-main.ts",
+			"src/viewer-url": "src/viewer-url.ts",
+			"src/viewer": "src/viewer.ts",
 			"src/library": "src/library.ts",
 			"src/setup": "src/setup.ts",
 		},
