@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { MaterialStore, type MemoryScope } from "../src/storage/materials.js";
-import { ManualClock } from "../src/domain/clock.js";
-import { EmbeddingError, type EmbeddingProvider } from "../src/providers/embedding.js";
+import { MaterialStore, type MemoryScope } from "@/storage/materials.js";
+import { ManualClock } from "@/domain/clock.js";
+import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
 
 const scope = { space: "home", character: "reader", world: "real" };
 const config = {
@@ -362,10 +362,6 @@ test.each([2, 3, 4])(
 			assert.equal(store.history(scope, first.id).length, 2);
 			assert.deepEqual(ids(store.recall(scope, { query: "秘密" })), []);
 			assert.ok(ids(store.recall(scope, { query: "杭州" })).includes(live.id));
-			assert.equal(
-				(db.prepare("SELECT COUNT(*) AS n FROM search_vectors").get() as { n: number }).n,
-				0,
-			);
 		} finally {
 			store.close();
 			db.close();

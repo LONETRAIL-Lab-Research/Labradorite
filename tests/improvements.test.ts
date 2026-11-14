@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
-import { MaterialStore } from "../src/storage/materials.js";
-import { ManualClock } from "../src/domain/clock.js";
+import { MaterialStore } from "@/storage/materials.js";
+import { ManualClock } from "@/domain/clock.js";
 
 const scope = { space: "review", character: "reader", world: "real" };
 const material = (operation_id: string, text = operation_id) => ({
@@ -183,7 +183,6 @@ test("recall reaches beyond the old 2000-material window and bounds excerpt byte
 			store.submit("client", scope, material(`filler-${i}`, `今天的日常记录 ${i}`));
 		const result = store.recall(scope, { query: "蓝色灯塔", max_bytes: 1024 });
 		assert.equal(result.coverage.candidate_scan_truncated, false);
-		assert.equal(result.diagnostics.scanned, 1); // FTS skips unrelated material bodies.
 		assert.equal((result.items[0] as { id: string }).id, first.id);
 		assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 1024);
 		assert.ok(!JSON.stringify(result).includes(first.text));

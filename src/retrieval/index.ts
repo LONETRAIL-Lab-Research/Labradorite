@@ -1,8 +1,8 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import type { MemoryScope, Material, Episode } from "../storage/materials.js";
-import type { Clock } from "../domain/clock.js";
-import { EmbeddingError, type EmbeddingProvider } from "../providers/embedding.js";
+import type { MemoryScope, Material, Episode } from "@/storage/materials.js";
+import type { Clock } from "@/domain/clock.js";
+import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
 import {
 	ANALYZER_VERSION,
 	indexText,
@@ -51,7 +51,7 @@ export class SearchIndex {
 			? createHash("sha256")
 					.update(
 						JSON.stringify([
-							provider.config.endpoint,
+							provider.spaceKey ?? provider.config.endpoint,
 							provider.config.model,
 							provider.config.dimensions,
 							provider.config.api_key_env ?? null,

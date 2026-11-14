@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { MaterialStore } from "../src/storage/materials.js";
+import { MaterialStore } from "@/storage/materials.js";
 
 const scope = { space: "own", character: "reader", world: "real" };
 const input = {
@@ -16,15 +16,18 @@ const input = {
 };
 
 test("unknown schemas and unrelated databases are not migrated or populated", () => {
-	const directory = mkdtempSync(join(tmpdir(), "fish-schema-"));
+	const directory = mkdtempSync(join(tmpdir(), "labradorite-schema-"));
 	const path = join(directory, "unknown.db");
 	const inspection = new Database(path);
 	try {
 		inspection.exec(
-			"PRAGMA user_version=99; CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('keep');",
+			"CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('keep');",
 		);
-		assert.throws(() => new MaterialStore(path), /Unsupported database schema/);
-		assert.equal(inspection.pragma("user_version", { simple: true }), 99);
+		for (const version of [1, 99]) {
+			inspection.pragma("user_version=" + version);
+			assert.throws(() => new MaterialStore(path), /Unsupported database schema/);
+			assert.equal(inspection.pragma("user_version", { simple: true }), version);
+		}
 		inspection.exec("PRAGMA user_version=0;");
 		assert.throws(() => new MaterialStore(path), /unrecognized database/);
 		assert.deepEqual(inspection.prepare("SELECT value FROM unrelated").get(), {
@@ -41,7 +44,7 @@ test("unknown schemas and unrelated databases are not migrated or populated", ()
 });
 
 test("material persists unchanged across reopen with stable idempotent receipt", () => {
-	const directory = mkdtempSync(join(tmpdir(), "fish-materials-"));
+	const directory = mkdtempSync(join(tmpdir(), "labradorite-materials-"));
 	const path = join(directory, "memory.db");
 	let store = new MaterialStore(path);
 	try {
@@ -101,7 +104,7 @@ test("scope isolation and reported source do not grant character authority", () 
 });
 
 test("failed operation insert rolls back material and sequence together", () => {
-	const directory = mkdtempSync(join(tmpdir(), "fish-rollback-"));
+	const directory = mkdtempSync(join(tmpdir(), "labradorite-rollback-"));
 	const path = join(directory, "memory.db");
 	const store = new MaterialStore(path);
 	const inspection = new Database(path);

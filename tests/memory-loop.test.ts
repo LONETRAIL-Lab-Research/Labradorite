@@ -3,7 +3,7 @@ import { test } from "vite-plus/test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MaterialStore } from "../src/storage/materials.js";
+import { MaterialStore } from "@/storage/materials.js";
 
 const scope = { space: "life", character: "writer", world: "real" };
 const source = (operation_id: string, text: string) => ({
@@ -35,7 +35,7 @@ function proposal(store: MaterialStore, ids: string[], operation_id = "organize-
 }
 
 test("experience loop preserves original views, detects stale work, revises and survives reopen", () => {
-	const dir = mkdtempSync(join(tmpdir(), "fish-loop-"));
+	const dir = mkdtempSync(join(tmpdir(), "labradorite-loop-"));
 	const path = join(dir, "memory.db");
 	let store = new MaterialStore(path);
 	try {
