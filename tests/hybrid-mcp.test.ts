@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { createInterface } from "node:readline";
+import { viewerUrl, loginViewer } from "./viewer-session.js";
 import type { Readable } from "node:stream";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +14,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 test("stdio MCP indexes through compatible HTTP embeddings and returns source-backed semantic recall", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "hybrid-mcp-"));
 	const inputs: string[][] = [];
+	let releaseFirstBatch!: () => void;
+	const firstBatch = new Promise<void>((resolve) => {
+		releaseFirstBatch = resolve;
+	});
 	const endpoint = createServer(async (req, res) => {
 		const chunks: Buffer[] = [];
 		for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -23,6 +27,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 			dimensions: number;
 		};
 		inputs.push(body.input);
+		if (inputs.length === 1) await firstBatch;
 		if (
 			req.method !== "POST" ||
 			req.url !== "/v1/embeddings" ||
@@ -64,7 +69,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 					dimensions: 2,
 					request_dimensions: true,
 					max_requests_per_day: 10,
-					timeout_ms: 2000,
+					timeout_ms: 10000,
 				},
 			}),
 		);
@@ -79,12 +84,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 				USERPROFILE: directory,
 			} as Record<string, string>,
 		});
-		const viewerUrl = (async () => {
-			for await (const line of createInterface({ input: transport.stderr as Readable })) {
-				if (line.startsWith("http://127.0.0.1:")) return line;
-			}
-			throw new Error("Viewer did not start");
-		})();
+		const managedUrl = viewerUrl(transport.stderr as Readable);
 		await client.connect(transport);
 		const call = async (name: string, args: Record<string, unknown>) => {
 			const result = await client.callTool({ name, arguments: args });
@@ -99,8 +99,17 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 			coverage: "synthetic activity",
 		});
 		assert.equal(inputs.length, 0);
-		const index = await call("memory_index", { max_batches: 1 });
-		assert.equal(index.indexed_chunks, 1, JSON.stringify({ index, inputs }));
+		const { indexing } = await call("memory_review", {});
+		assert.equal(indexing.state, "running");
+		const inProgress = (await call("memory_status", {})).retrieval;
+		assert.equal(inProgress.indexing.state, "running");
+		assert.equal(inProgress.pending_chunks, 1);
+		releaseFirstBatch();
+		await vi.waitFor(async () => {
+			const status = (await call("memory_status", {})).retrieval;
+			assert.equal(status.indexing.state, "completed");
+			assert.equal(status.pending_chunks, 0);
+		});
 		assert.deepEqual(inputs[0], [receipt.material.text]);
 		const recall = await call("memory_recall", { query: "脚踏出游" });
 		assert.equal(recall.items[0].id, receipt.material.id);
@@ -120,28 +129,22 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		});
 		const closed = once(viewer, "exit");
 		try {
-			const [output] = await once(viewer.stdout, "data");
-			for (const address of [await viewerUrl, String(output).trim()]) {
-				const login = new URL(address);
-				const ticket = await fetch(login, { redirect: "manual" });
-				const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
-				await fetch(new URL("/select?current=1", login), {
-					method: "POST",
-					headers: { cookie, origin: login.origin },
-					redirect: "manual",
-				});
+			const managed = await managedUrl;
+			for (const login of [managed, await viewerUrl(viewer.stdout)]) {
+				const { get, select } = await loginViewer(login);
+				await select();
 				const search = new URL("/search", login);
 				search.searchParams.set("q", "脚踏出游");
-				const result = await (await fetch(search, { headers: { cookie } })).text();
-				const managed = address === (await viewerUrl);
-				assert.equal(result.includes("/material/" + receipt.material.id), managed);
-				assert.equal(result.includes("混合检索"), managed);
-				if (!managed) assert.ok(result.includes("语义检索不可用"));
+				const result = await (await get(search)).text();
+				const isManaged = login === managed;
+				assert.equal(result.includes("/material/" + receipt.material.id), isManaged);
+				assert.equal(result.includes('value="hybrid"'), isManaged);
+				if (!isManaged) assert.ok(result.includes("语义检索不可用"));
 				search.searchParams.set("mode", "lexical");
-				const local = await (await fetch(search, { headers: { cookie } })).text();
+				const local = await (await get(search)).text();
 				assert.ok(!local.includes("/material/" + receipt.material.id));
 				search.searchParams.set("q", "自行车");
-				const matched = await (await fetch(search, { headers: { cookie } })).text();
+				const matched = await (await get(search)).text();
 				assert.ok(matched.includes("/material/" + receipt.material.id));
 			}
 		} finally {
@@ -157,7 +160,44 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		assert.equal((await call("memory_status", {})).retrieval.chunks, 0);
 		assert.deepEqual((await call("memory_recall", { query: "脚踏出游" })).items, []);
 		assert.equal(inputs.length, 3);
+		const fresh = (
+			await call("memory_submit", {
+				operation_id: "later",
+				text: "再次骑车",
+				source_kind: "activity_report",
+				speaker: "reader",
+				coverage: "ride",
+			})
+		).material;
+		const status = await call("memory_status", {});
+		const proposal = {
+			operation_id: "ride",
+			base_seq: status.snapshot_seq,
+			title: "骑车",
+			summary: "再次骑车",
+			source_ids: [fresh.id],
+			beats: [{ text: "出发", source_ids: [fresh.id] }],
+			interpretations: [],
+			thread: null,
+			activity_state: "completed",
+			unknowns: [],
+		};
+		await call("memory_review", { ...proposal, dry_run: true });
+		assert.equal(inputs.length, 3);
+		await call("memory_review", proposal);
+		await vi.waitFor(async () =>
+			assert.equal((await call("memory_status", {})).retrieval.pending_chunks, 0),
+		);
+		assert.equal(inputs.length, 4);
+		const finish = await client.callTool({ name: "memory_review" });
+		assert.equal(finish.isError, false);
+		assert.equal(
+			JSON.parse((finish.content as { text: string }[])[0]!.text).indexing.state,
+			"completed",
+		);
+		assert.equal(inputs.length, 4);
 	} finally {
+		releaseFirstBatch();
 		await client.close();
 		endpoint.closeAllConnections();
 		await new Promise<void>((resolve) => endpoint.close(() => resolve()));

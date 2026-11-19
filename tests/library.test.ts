@@ -1,13 +1,58 @@
 import sharp from "sharp";
+import Database from "better-sqlite3";
+import { checksum } from "@/storage/media.js";
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { viewerUrl, loginViewer } from "./viewer-session.js";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+test("restore rejects a checksummed backup with an unsupported database version", async () => {
+	const backup = mkdtempSync(join(tmpdir(), "restore-version-"));
+	try {
+		const database = join(backup, "memory.db");
+		const db = new Database(database);
+		try {
+			db.exec("CREATE TABLE materials (body TEXT); PRAGMA user_version=3");
+		} finally {
+			db.close();
+		}
+		writeFileSync(
+			join(backup, "manifest.json"),
+			JSON.stringify({
+				format: 1,
+				space: "home",
+				character: "reader",
+				world: "real",
+				sha256: await checksum(database),
+			}),
+		);
+		const destination = join(backup, "restored");
+		assert.throws(
+			() =>
+				execFileSync(
+					process.execPath,
+					[
+						resolve("node_modules/vite-plus/bin/vpx"),
+						resolve("scripts/library.ts"),
+						"restore",
+						backup,
+						destination,
+					],
+					{ stdio: "pipe" },
+				),
+			/Expected a v4 memory database, found version 3/,
+		);
+		assert.equal(existsSync(destination), false);
+	} finally {
+		rmSync(backup, { recursive: true, force: true });
+	}
+});
 
 test("MCP album, Markdown export and restored instance retain the original media and episode sources", async () => {
 	const root = mkdtempSync(join(tmpdir(), "memory-album-"));
@@ -72,6 +117,14 @@ test("MCP album, Markdown export and restored instance retain the original media
 			operation_id: "episode",
 			base_seq: status.snapshot_seq,
 			title: "照片",
+			happen: {
+				kind: "point",
+				start: { value: "2026-10", precision: "month" },
+				utc_offset: "+08:00",
+				basis: "stated",
+				source_ids: [source.id],
+				description: "十月的活动",
+			},
 			summary: "摄影社的阿林分享了他拍摄的活动照片，说他喜欢记录社团活动。",
 			source_ids: [source.id],
 			beats: [{ text: "收到照片", source_ids: [source.id] }],
@@ -85,6 +138,16 @@ test("MCP album, Markdown export and restored instance retain the original media
 			},
 		});
 		const { episode, person } = organized;
+		const window = { from: "2026-10-01T00:00:00+08:00", to: "2026-10-31T23:59:59+08:00" };
+		const recalled = await call("memory_recall", {
+			query: "",
+			kind: "episode",
+			time_basis: "happen",
+			...window,
+		});
+		assert.equal(recalled.items[0].id, episode.id);
+		assert.deepEqual(recalled.items[0].happen, episode.happen);
+
 		const people = await call("memory_people", { query: "摄影社" });
 		assert.deepEqual(
 			people.items.map((p: { id: string }) => p.id),
@@ -127,20 +190,26 @@ test("MCP album, Markdown export and restored instance retain the original media
 		});
 		const closed = once(viewer, "exit");
 		try {
-			const [startup] = await once(viewer.stdout, "data");
-			const login = new URL(String(startup).trim());
+			const login = await viewerUrl(viewer.stdout);
 			assert.equal((await fetch(login.origin)).status, 403);
-			const ticket = await fetch(login, { redirect: "manual" });
-			const cookie = ticket.headers.get("set-cookie")!.split(";")[0]!;
-			const chooser = await fetch(new URL("/choose", login), { headers: { cookie } });
-			assert.ok((await chooser.text()).includes("打开当前记忆库"));
-			const select = await fetch(new URL("/select?current=1", login), {
-				method: "POST",
-				headers: { cookie, origin: login.origin },
-				redirect: "manual",
-			});
-			assert.equal(select.status, 303);
-			const get = (path: string) => fetch(new URL(path, login), { headers: { cookie } });
+			const { get, post, select } = await loginViewer(login);
+			const entry = await (await get("/choose")).text();
+			const stylesheet = /<link rel="stylesheet" href="([^"]+)"/.exec(entry);
+			assert.ok(stylesheet);
+			const css = await get(stylesheet[1]!);
+			assert.equal(css.status, 200);
+			assert.match(css.headers.get("content-type") ?? "", /^text\/css/);
+			assert.ok((await css.text()).trim().length > 0);
+			const browse = /href="(\/choose\?browse=[^"]+)"/.exec(entry)![1]!;
+			const folders = await (await get(browse.replaceAll("&amp;", "&"))).text();
+			const folder = /href="(\/choose\?dir=[^"]+)"/.exec(folders)![1]!;
+			const chosen = await (await get(folder)).text();
+			assert.ok(chosen.includes(root));
+			await select(/action="(\/select\?[^"]+)"/.exec(chosen)![1]!);
+			const invalid = await (await get("/?tab=episodes&from=invalid")).text();
+			assert.match(invalid, /role="alert"/);
+			const detail = await (await get("/episode/" + episode.id)).text();
+			assert.ok(detail.includes("十月的活动") && detail.includes("/material/" + source.id));
 			const directory = await (await get("/?tab=people")).text();
 			assert.ok(directory.includes("/person/" + person.id));
 			const profile = await (await get("/person/" + person.id)).text();
@@ -162,24 +231,14 @@ test("MCP album, Markdown export and restored instance retain the original media
 					results.includes("/material/" + source.id),
 			);
 
-			assert.ok(
-				(await (await get("/episode/" + episode.id)).text()).includes(
-					"/material/" + source.id,
-				),
-			);
 			assert.deepEqual(
 				Buffer.from(await (await get("/media/" + source.id)).arrayBuffer()),
 				photo,
 			);
-			const partial = await fetch(new URL("/media/" + video.id, login), {
-				headers: { cookie, range: "bytes=4-7" },
-			});
+			const partial = await get("/media/" + video.id, { range: "bytes=4-7" });
 			assert.equal(partial.status, 206);
 			assert.equal(await partial.text(), "ftyp");
-			assert.equal(
-				(await fetch(login.origin, { method: "POST", headers: { cookie } })).status,
-				405,
-			);
+			assert.equal((await post("/")).status, 405);
 		} finally {
 			viewer.kill();
 			await closed;
@@ -202,6 +261,11 @@ test("MCP album, Markdown export and restored instance retain the original media
 		await client.close();
 		client = new Client({ name: "restored", version: "1" });
 		await connect(join(restored, "runtime.json"));
+		assert.ok(
+			readFileSync(join(exported, episode.id + "-v1.md"), "utf8").includes(
+				"2026-10（月精度）",
+			),
+		);
 		const restoredPerson = (await call("memory_read", { kind: "person", id: person.id }))
 			.profile;
 		assert.equal(restoredPerson.current_impression.episodes[0].id, episode.id);

@@ -17,6 +17,7 @@
 		"mcp": "node dist/src/mcp-main.js",
 		"viewer:url": "vpx scripts/viewer-url.js",
 		"library": "vpx scripts/library.ts",
+		"index": "vpx scripts/index.ts",
 		"setup": "vpx scripts/setup.ts",
 		"prepare": "vp config"
 	},
@@ -27,6 +28,7 @@
 		"ajv": "8.20.0",
 		"better-sqlite3": "13.0.3",
 		"sharp": "^0.35.5",
+		"vue": "^3.5.45",
 		"zod": "4.6.7"
 	},
 	"devDependencies": {
@@ -34,6 +36,7 @@
 		"@types/node": "24.19.2",
 		"json-schema-to-typescript": "16.0.0",
 		"typescript": "7.0.2",
+		"unplugin-vue": "^8.0.1",
 		"vite-plus": "1.4.0"
 	},
 	"overrides": {

@@ -1,3 +1,5 @@
+import { readEpisodeBody } from "../src/storage/episode-body.js";
+import { describeEventTime } from "../src/domain/event-time.js";
 import Database from "better-sqlite3";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -5,7 +7,7 @@ import { tmpdir } from "node:os";
 import { loadRuntimeConfig } from "@/runtime-config.js";
 import { checksum } from "@/storage/media.js";
 import { findPeople, readPerson } from "@/storage/profiles.js";
-import type { Material, Episode } from "@/storage/materials.js";
+import type { Material } from "@/storage/materials.js";
 
 const [command, input, target] = process.argv.slice(2);
 if (
@@ -31,6 +33,11 @@ function quote(text: string) {
 		.map((line) => "> " + line)
 		.join("\n");
 }
+function checkDatabaseVersion(db: Database.Database) {
+	const version = db.pragma("user_version", { simple: true });
+	if (version !== 4)
+		throw new Error(`Expected a v4 memory database, found version ${String(version)}`);
+}
 async function run() {
 	if (command === "restore") {
 		const manifest = JSON.parse(await readFile(join(input!, "manifest.json"), "utf8"));
@@ -47,6 +54,7 @@ async function run() {
 			throw new Error("Database checksum mismatch");
 		const db = new Database(database, { readonly: true });
 		try {
+			checkDatabaseVersion(db);
 			if (db.pragma("integrity_check", { simple: true }) !== "ok")
 				throw new Error("Invalid database");
 			await mkdir(database + ".media");
@@ -83,9 +91,7 @@ async function run() {
 		await source.backup(snapshot);
 		const db = new Database(snapshot, { readonly: true });
 		try {
-			const version = db.pragma("user_version", { simple: true });
-			if (version !== 3 && version !== 4)
-				throw new Error("Expected a v3 or v4 memory database");
+			checkDatabaseVersion(db);
 			const assets = join(destination, "media");
 			await mkdir(assets);
 			if (command === "backup") {
@@ -143,44 +149,46 @@ async function run() {
 				await writeFile(join(destination, m.id + ".md"), lines.join("\n\n") + "\n");
 			}
 			await writeFile(join(destination, "Album.md"), album.join("\n\n") + "\n");
-			if (version === 4) {
-				let after: string | null = "";
-				do {
-					const page = findPeople(db, config, "", after);
-					for (const item of page.items) {
-						const person = readPerson(db, config, item.id)!;
-						const lines = ["# " + person.name, quote(person.identity)];
-						for (const review of person.history) {
-							const label =
-								review.impression === null
-									? "关联经历"
-									: review.revision === person.current_impression?.revision
-										? "当前印象"
-										: "以往印象";
-							lines.push("## " + label + " · " + review.formed_at);
-							if (review.impression) lines.push(quote(review.impression));
-							for (const ref of review.episodes)
-								lines.push(
-									`[依据的经历（版本 ${ref.revision}）](${ref.id}-v${ref.revision}.md)`,
-								);
-						}
-						await writeFile(
-							join(destination, "person-" + person.id + ".md"),
-							lines.join("\n\n") + "\n",
-						);
+			let after: string | null = "";
+			do {
+				const page = findPeople(db, config, "", after);
+				for (const item of page.items) {
+					const person = readPerson(db, config, item.id)!;
+					const lines = ["# " + person.name, quote(person.identity)];
+					for (const review of person.history) {
+						const label =
+							review.impression === null
+								? "关联经历"
+								: review.revision === person.current_impression?.revision
+									? "当前印象"
+									: "以往印象";
+						lines.push("## " + label + " · " + review.formed_at);
+						if (review.impression) lines.push(quote(review.impression));
+						for (const ref of review.episodes)
+							lines.push(
+								`[依据的经历（版本 ${ref.revision}）](${ref.id}-v${ref.revision}.md)`,
+							);
 					}
-					after = page.next;
-				} while (after !== null);
-			}
+					await writeFile(
+						join(destination, "person-" + person.id + ".md"),
+						lines.join("\n\n") + "\n",
+					);
+				}
+				after = page.next;
+			} while (after !== null);
 			for (const row of db
 				.prepare(
 					"SELECT body FROM episodes e JOIN spaces s ON e.space=s.id WHERE e.space=? AND e.world=? AND s.character=? ORDER BY e.id,e.revision",
 				)
 				.iterate(...params) as Iterable<{ body: string }>) {
-				const e = JSON.parse(row.body) as Episode;
+				const e = readEpisodeBody(row.body);
 				const lines = [
 					"# " + e.title,
-					"模型整理 · 修订 " + e.revision,
+					"模型整理 · 修订 " + e.revision + " · " + e.review,
+					"发生：" + quote(describeEventTime(e.happen)),
+					...(e.happen?.source_ids ?? []).map(
+						(id) => "[时间依据 " + id + "](" + id + ".md)",
+					),
 					quote(e.summary),
 					...e.beats.map((x) => quote(x.text)),
 					...e.interpretations.map((x) => "解释 " + quote(x.text)),

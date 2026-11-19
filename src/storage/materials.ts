@@ -1,10 +1,22 @@
+import { ReviewLog } from "./review-log.js";
+import { SettingLog, effectiveSettings, settingMode, type SettingChange } from "./settings.js";
+import settingSchema from "@/contracts/schemas/review-setting.json" with { type: "json" };
+import type { ReviewSetting } from "@/contracts/generated/review-setting.js";
+import { episodeChanges, readEpisodeBody } from "./episode-body.js";
+import {
+	validTimestamp,
+	validateEventTime,
+	eventRange,
+	overlaps,
+	eventOrder,
+} from "@/domain/event-time.js";
 import type { MediaAsset } from "./media.js";
 import { findPeople, profileSchema, readPerson } from "./profiles.js";
 import reviewSchema from "@/contracts/schemas/review-person.json" with { type: "json" };
 import type { ReviewPerson } from "@/contracts/generated/review-person.js";
 import indexSchema from "@/contracts/schemas/index-memory.json" with { type: "json" };
 import type { IndexMemory } from "@/contracts/generated/index-memory.js";
-import { SearchIndex, searchText, type Hit } from "@/retrieval/index.js";
+import { SearchIndex, searchText, type Hit, type IndexOptions } from "@/retrieval/index.js";
 import { analyze, reciprocalRankFusion } from "@/retrieval/algorithms.js";
 import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
 import previewDeleteSchema from "@/contracts/schemas/preview-delete.json" with { type: "json" };
@@ -25,6 +37,10 @@ import type { SubmitMaterial } from "@/contracts/generated/submit-material.js";
 import { SystemClock, type Clock } from "@/domain/clock.js";
 
 const validator = new Ajv({ strict: true });
+const validateSettingReview = validator.compile<ReviewSetting>(settingSchema);
+const validateSetting = validator.compile<ReviewSetting["setting"]>(
+	settingSchema.properties.setting,
+);
 const validateReview = validator.compile<ReviewPerson>(reviewSchema);
 const validateIndex = validator.compile<IndexMemory>(indexSchema);
 const validatePreviewDelete = validator.compile<PreviewDelete>(previewDeleteSchema);
@@ -39,7 +55,7 @@ export interface Episode extends Omit<
 	id: string;
 	revision: number;
 	commit_seq: string;
-	recorded_at: string;
+	review: string;
 	semantic_status: "model_proposed";
 	stale?: boolean;
 }
@@ -85,6 +101,17 @@ export interface Material {
 	context_role?: "historical_background";
 	correction_ids?: string[];
 }
+type BrowsePosition = { seq: string; event_order: number | null };
+
+function compareBrowsePositions(a: BrowsePosition, b: BrowsePosition): number {
+	const aTime = a.event_order ?? -Infinity;
+	const bTime = b.event_order ?? -Infinity;
+	if (aTime !== bTime) return bTime - aTime;
+	const aSeq = BigInt(a.seq);
+	const bSeq = BigInt(b.seq);
+	return aSeq === bSeq ? 0 : aSeq > bSeq ? -1 : 1;
+}
+
 function canonical(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value);
 	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -93,40 +120,30 @@ function canonical(value: unknown): string {
 		.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`)
 		.join(",")}}`;
 }
-function validTimestamp(value: string): boolean {
-	const match =
-		/^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(
-			value,
-		);
-	if (!match || !Number.isFinite(Date.parse(value))) return false;
-	const year = Number(match[1]),
-		month = Number(match[2]),
-		day = Number(match[3]);
-	const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-	const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-	return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1]!;
-}
 export class MaterialStore {
 	readonly #db: Database.Database;
 	readonly #key: string;
+	readonly reviews: ReviewLog;
+	readonly settings: SettingLog;
 	readonly #search: SearchIndex;
 	constructor(
 		path: string,
 		private readonly clock: Clock = new SystemClock(),
 		provider?: EmbeddingProvider,
-		access: "service" | "search" = "service",
+		access: "service" | "search" | "inspect" | "audit" = "service",
 	) {
 		this.#db = new Database(path, {
-			fileMustExist: access === "search",
-			readonly: access === "search" && !provider,
+			fileMustExist: access !== "service",
+			readonly: access === "inspect" || (access === "search" && !provider),
 		});
 		this.#search = new SearchIndex(this.#db, clock, provider);
+		this.settings = new SettingLog(this.#db);
+		this.reviews = new ReviewLog(this.#db, this.#search, this.settings);
 		try {
 			const version = this.#db.pragma("user_version", { simple: true });
-			if (access === "search" && version !== 3 && version !== 4)
-				throw new Error("Search requires a v3 or v4 database.");
-			if (version !== 0 && version !== 2 && version !== 3 && version !== 4)
-				throw new Error("Unsupported database schema.");
+			if (access !== "service" && version !== 4)
+				throw new Error("Search requires a v4 database.");
+			if (version !== 0 && version !== 4) throw new Error("Unsupported database schema.");
 			if (
 				version === 0 &&
 				this.#db
@@ -151,42 +168,16 @@ export class MaterialStore {
 					CREATE TABLE episode_sources (episode TEXT NOT NULL, revision INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(episode,revision,source));
 					CREATE TABLE memory_operations (principal TEXT NOT NULL, space TEXT NOT NULL, operation TEXT NOT NULL, digest TEXT NOT NULL, kind TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(principal,space,operation));
 					CREATE TABLE tombstones (id TEXT PRIMARY KEY, space TEXT NOT NULL, world TEXT NOT NULL);
-					PRAGMA user_version = 2;`);
+					PRAGMA user_version = 4;`);
+						this.#search.initialize();
+						this.#db.exec(profileSchema);
 						this.#db
 							.prepare("INSERT INTO metadata VALUES ('digest_key', ?)")
 							.run(randomBytes(32).toString("hex"));
 					})
 					.immediate();
 			}
-			if (version === 0 || version === 2)
-				this.#db
-					.transaction(() => {
-						this.#search.initialize();
-						this.#db.pragma("user_version = 3");
-					})
-					.immediate();
 			this.#search.verify();
-			if (access === "service" && version !== 4)
-				this.#db
-					.transaction(() => {
-						if (this.#db.pragma("user_version", { simple: true }) === 4) return;
-						this.#db.exec(profileSchema);
-						this.#db.pragma("user_version = 4");
-					})
-					.immediate();
-			if (
-				access === "service" &&
-				!this.#db.prepare("SELECT 1 FROM metadata WHERE key='review_status_format'").get()
-			) {
-				this.#db
-					.transaction(() => {
-						this.#db
-							.exec(`UPDATE materials SET body=json_set(json_remove(body,'$.organization_status'),'$.review_status','pending')
-						WHERE json_type(body,'$.organization_status') IS NOT NULL;
-						INSERT OR IGNORE INTO metadata VALUES ('review_status_format','1');`);
-					})
-					.immediate();
-			}
 			this.#key = (
 				this.#db.prepare("SELECT value FROM metadata WHERE key='digest_key'").get() as {
 					value: string;
@@ -319,9 +310,7 @@ export class MaterialStore {
 			)
 			.get(id, scope.space, scope.world, scope.character) as { body: string } | undefined;
 		if (!row) throw new MaterialError("NOT_FOUND");
-		const material = JSON.parse(row.body) as Material & { organization_status?: string };
-		// Read-only connections can open libraries before the service migrates them.
-		delete material.organization_status;
+		const material = JSON.parse(row.body) as Material;
 		return {
 			...material,
 			review_status: this.#reviewed(id) ? "reviewed" : "pending",
@@ -370,6 +359,8 @@ export class MaterialStore {
 					| undefined;
 				if (row) {
 					if (row.digest !== digest) throw new MaterialError("IDEMPOTENCY_CONFLICT");
+					if (JSON.parse(row.result).audit?.state === "undone")
+						throw new MaterialError("NOT_FOUND");
 					return { result: row.result, replayed: true };
 				}
 				const result = run();
@@ -380,11 +371,109 @@ export class MaterialStore {
 			})
 			.immediate();
 	}
+	#settingBase(scope: MemoryScope, setting: ReviewSetting["setting"]) {
+		if (Boolean(setting.id) !== Boolean(setting.expected_version))
+			throw new MaterialError("VALIDATION_ERROR");
+		if (!setting.id) return;
+		const current = effectiveSettings(this.settings.history(scope)).find(
+			(r) => r.id === setting.id,
+		);
+		if (!current) throw new MaterialError("NOT_FOUND");
+		if (current.version !== setting.expected_version || current.target !== setting.target)
+			throw new MaterialError("REVISION_CONFLICT");
+		return current;
+	}
+	#recordSetting(
+		scope: MemoryScope,
+		setting: ReviewSetting["setting"],
+		before: SettingChange | undefined,
+		change: Pick<
+			SettingChange,
+			"author" | "mode" | "state" | "episodes" | "reason" | "source_ids"
+		>,
+	) {
+		this.#next(scope);
+		return JSON.stringify({
+			id: before?.id ?? randomUUID(),
+			version: randomUUID(),
+			base: before?.version ?? null,
+			world: scope.world,
+			target: setting.target,
+			title: setting.title,
+			body: setting.body,
+			time: this.clock.now().toISOString(),
+			...change,
+		} satisfies SettingChange);
+	}
+	reviewSetting(principal: string, scope: MemoryScope, input: unknown, preview = false) {
+		if (!validateSettingReview(input)) throw new MaterialError("VALIDATION_ERROR");
+		const plan = () => {
+			if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
+			const before = this.#settingBase(scope, input.setting);
+			const sources = new Set(
+				input.episodes.flatMap(
+					(ref) => this.episode(scope, ref.id, ref.revision).source_ids,
+				),
+			);
+			const mode = before?.mode ?? "owner";
+			const state = mode === "autonomous" ? "unreviewed" : "proposed";
+			return { before, mode, state, sources } as const;
+		};
+		if (preview) {
+			const { before, mode, state } = plan();
+			return {
+				dry_run: true,
+				before: before && { title: before.title, body: before.body },
+				setting: input.setting,
+				mode,
+				state,
+			};
+		}
+		const op = this.#operation(principal, scope, "setting", input, () => {
+			const { before, mode, state, sources } = plan();
+			return this.#recordSetting(scope, input.setting, before, {
+				author: "model",
+				mode,
+				state,
+				episodes: input.episodes,
+				source_ids: [...sources],
+				reason: input.reason,
+			});
+		});
+		return { change: JSON.parse(op.result) as SettingChange, replayed: op.replayed };
+	}
+	saveOwnerSetting(scope: MemoryScope, operation_id: string, input: unknown, policy: unknown) {
+		if (!validateSetting(input) || !/^[a-zA-Z0-9_-]{1,128}$/.test(operation_id))
+			throw new MaterialError("VALIDATION_ERROR");
+		const mode = settingMode(policy);
+		const request = { operation_id, setting: input, mode };
+		this.#operation("viewer-owner", scope, "setting", request, () =>
+			this.#recordSetting(scope, input, this.#settingBase(scope, input), {
+				author: "owner",
+				mode,
+				state: "checked",
+				episodes: [],
+				source_ids: [],
+				reason: "",
+			}),
+		);
+	}
 	#checkProposal(scope: MemoryScope, input: unknown): asserts input is ReviewEpisode {
 		if (!validateEpisodeReview(input) || Boolean(input.id) !== Boolean(input.expected_revision))
 			throw new MaterialError("VALIDATION_ERROR");
 		if (this.sequence(scope) !== input.base_seq) throw new MaterialError("STALE_BASIS");
 		for (const id of input.source_ids) this.read(scope, id);
+		const time = input.happen ?? (input.id ? this.episode(scope, input.id).happen : undefined);
+		if (time) {
+			try {
+				validateEventTime(time);
+			} catch {
+				throw new MaterialError("VALIDATION_ERROR");
+			}
+			for (const id of time.source_ids ?? []) {
+				if (!input.source_ids.includes(id)) throw new MaterialError("SOURCE_INVALID");
+			}
+		}
 		for (const part of [...input.beats, ...input.interpretations])
 			for (const id of part.source_ids) {
 				if (!input.source_ids.includes(id)) throw new MaterialError("SOURCE_INVALID");
@@ -412,19 +501,7 @@ export class MaterialStore {
 	previewEpisodeReview(scope: MemoryScope, input: unknown) {
 		this.#checkProposal(scope, input);
 		const old = input.id ? this.episode(scope, input.id) : undefined;
-		const keys = [
-			"title",
-			"summary",
-			"source_ids",
-			"beats",
-			"interpretations",
-			"thread",
-			"activity_state",
-			"unknowns",
-		] as const;
-		const changes = keys
-			.filter((key) => canonical(old?.[key] ?? null) !== canonical(input[key]))
-			.map((field) => ({ field, before: old?.[field] ?? null, after: input[field] }));
+		const changes = episodeChanges(old, old?.happen ? { happen: old.happen, ...input } : input);
 		const overlapping = new Set<string>();
 		for (const source of input.source_ids) {
 			const rows = this.#db
@@ -454,7 +531,7 @@ export class MaterialStore {
 		const {
 			revision: _revision,
 			commit_seq: _seq,
-			recorded_at: _time,
+			review: _time,
 			semantic_status: _semantic,
 			stale: _stale,
 			...body
@@ -472,6 +549,7 @@ export class MaterialStore {
 			summary: input.summary ?? old.summary,
 			thread: input.thread === undefined ? old.thread : input.thread,
 			activity_state: input.activity_state ?? old.activity_state,
+			...((input.happen ?? old.happen) ? { happen: input.happen ?? old.happen } : {}),
 		};
 		return input.dry_run
 			? this.previewEpisodeReview(scope, proposal)
@@ -485,11 +563,13 @@ export class MaterialStore {
 			this.#checkProposal(scope, input);
 			const id = input.id ?? randomUUID();
 			let revision = 1;
+			let happen = input.happen;
 			if (input.id) {
 				const old = this.episode(scope, id);
 				if (old.revision !== input.expected_revision)
 					throw new MaterialError("REVISION_CONFLICT");
-				revision = old.revision + 1;
+				revision = this.reviews.nextRevision("episode", id, old.revision);
+				happen ??= old.happen;
 			}
 			const {
 				operation_id: _op,
@@ -500,10 +580,11 @@ export class MaterialStore {
 			} = input;
 			const episode: Episode = {
 				...body,
+				...(happen ? { happen } : {}),
 				id,
 				revision,
 				commit_seq: this.#next(scope),
-				recorded_at: this.clock.now().toISOString(),
+				review: this.clock.now().toISOString(),
 				semantic_status: "model_proposed",
 			};
 			this.#db
@@ -520,7 +601,12 @@ export class MaterialStore {
 						...(person_review.other_episodes ?? []),
 					])
 				: undefined;
-			return JSON.stringify({ id, revision, person });
+			return JSON.stringify({
+				id,
+				revision,
+				person,
+				audit: { world: scope.world, time: episode.review },
+			});
 		});
 		const ref = JSON.parse(operation.result) as {
 			id: string;
@@ -548,7 +634,7 @@ export class MaterialStore {
 					: [id, scope.space, scope.world, revision]),
 			) as { body: string } | undefined;
 		if (!row) throw new MaterialError("NOT_FOUND");
-		const ep = JSON.parse(row.body) as Episode;
+		const ep = readEpisodeBody(row.body);
 		for (const source of ep.source_ids) this.read(scope, source);
 		return ep;
 	}
@@ -616,7 +702,9 @@ export class MaterialStore {
 				.prepare("INSERT INTO people(id,space,world,name,identity) VALUES(?,?,?,?,?)")
 				.run(id, scope.space, scope.world, input.name!, input.identity!);
 		}
-		const revision = (input.expected_revision ?? 0) + 1;
+		const revision = input.id
+			? this.reviews.nextRevision("person", id, input.expected_revision!)
+			: 1;
 		this.#db
 			.prepare(
 				"INSERT INTO person_reviews(person,revision,formed_at,impression) VALUES(?,?,?,?)",
@@ -656,7 +744,11 @@ export class MaterialStore {
 		const operation = this.#operation(principal, scope, "review_person", input, () => {
 			this.#checkPersonReviewBasis(scope, input);
 			const ref = this.#writeReview(scope, input, input.episodes);
-			return JSON.stringify({ ...ref, commit_seq: this.#next(scope) });
+			return JSON.stringify({
+				...ref,
+				commit_seq: this.#next(scope),
+				audit: { world: scope.world, time: this.clock.now().toISOString() },
+			});
 		});
 		const ref = JSON.parse(operation.result) as {
 			id: string;
@@ -664,7 +756,12 @@ export class MaterialStore {
 			commit_seq: string;
 		};
 		if (operation.replayed) this.#personRevision(scope, ref.id, ref.revision);
-		return { ...ref, replayed: operation.replayed };
+		return {
+			id: ref.id,
+			revision: ref.revision,
+			commit_seq: ref.commit_seq,
+			replayed: operation.replayed,
+		};
 	}
 	#reviewed(id: string): boolean {
 		return Boolean(
@@ -775,6 +872,14 @@ export class MaterialStore {
 		this.sequence(scope);
 		return this.#search.index(scope, batches);
 	}
+	retrievalStatus(scope: MemoryScope) {
+		this.sequence(scope);
+		return this.#search.status(scope);
+	}
+	async indexAll(scope: MemoryScope, options: IndexOptions = {}) {
+		this.sequence(scope);
+		return this.#search.index(scope, Infinity, options);
+	}
 	async recallAsync(scope: MemoryScope, input: unknown) {
 		this.#validateRecall(input);
 		this.sequence(scope);
@@ -805,10 +910,9 @@ export class MaterialStore {
 		const lexicalHits = new Map(lexical.map((x) => [x.id, x]));
 		const semanticHits = new Map(semantic.map((x) => [x.id, x]));
 		const eligibleIds = new Set<string>();
-		type Candidate = {
+		type Candidate = BrowsePosition & {
 			kind: "material" | "episode";
 			id: string;
-			seq: string;
 			text: string;
 			time: string | null;
 			value: Material | Episode | undefined;
@@ -820,9 +924,24 @@ export class MaterialStore {
 			eligible = 0,
 			matched = 0;
 		const basis = input.time_basis ?? "received_at";
+		let cursor: BrowsePosition | undefined;
+		if (input.before_seq) {
+			cursor = { seq: input.before_seq, event_order: null };
+			if (basis === "happen") {
+				// Use the returned revision, even if the episode has since been edited.
+				const row = this.#db
+					.prepare(
+						"SELECT body FROM episodes WHERE space=? AND world=? AND json_extract(body,'$.commit_seq')=?",
+					)
+					.get(scope.space, scope.world, input.before_seq) as
+					| { body: string }
+					| undefined;
+				if (!row) throw new MaterialError("VALIDATION_ERROR");
+				cursor.event_order = eventOrder(readEpisodeBody(row.body).happen);
+			}
+		}
 		const consider = (kind: Candidate["kind"], value: Material | Episode) => {
 			scanned++;
-			if (input.before_seq && BigInt(value.commit_seq) >= BigInt(input.before_seq)) return;
 			const isMaterial = kind === "material",
 				m = value as Material,
 				ep = value as Episode;
@@ -835,15 +954,26 @@ export class MaterialStore {
 			if (input.thread && value.thread !== input.thread) return;
 			// Authored time and channel are material metadata; never invent an episode timestamp or channel.
 			if (input.channel && (!isMaterial || m.channel !== input.channel)) return;
+			if ((basis === "happen" || basis === "review") && isMaterial) return;
+			const position = {
+				seq: value.commit_seq,
+				event_order: basis === "happen" ? eventOrder(ep.happen) : null,
+			};
+			if (cursor && compareBrowsePositions(position, cursor) <= 0) return;
+			const occurrence = !isMaterial ? eventRange(ep.happen) : null;
 			const time =
-				basis === "authored_at"
-					? isMaterial
-						? m.authored_at
-						: null
-					: isMaterial
-						? m.received_at
-						: ep.recorded_at;
-			if (
+				basis === "happen"
+					? null
+					: basis === "authored_at"
+						? isMaterial
+							? m.authored_at
+							: null
+						: isMaterial
+							? m.received_at
+							: ep.review;
+			if (basis === "happen") {
+				if (!overlaps(occurrence, input.from, input.to)) return;
+			} else if (
 				(input.from || input.to) &&
 				(!time ||
 					(input.from && Date.parse(time) < Date.parse(input.from)) ||
@@ -861,23 +991,14 @@ export class MaterialStore {
 			top.push({
 				kind,
 				id: value.id,
-				seq: value.commit_seq,
+				...position,
 				text,
 				time,
 				value: q ? undefined : value,
 				terms,
 				score,
 			});
-			if (!q)
-				top.sort(
-					(a, b) =>
-						b.score - a.score ||
-						(BigInt(a.seq) > BigInt(b.seq)
-							? -1
-							: BigInt(a.seq) < BigInt(b.seq)
-								? 1
-								: a.id.localeCompare(b.id)),
-				);
+			if (!q) top.sort(compareBrowsePositions);
 			if (!q && top.length > limit + 1) top.pop();
 		};
 		if (q) {
@@ -918,7 +1039,7 @@ export class MaterialStore {
 						"SELECT body FROM episodes e WHERE space=? AND world=? AND revision=(SELECT MAX(x.revision) FROM episodes x WHERE x.id=e.id)",
 					)
 					.iterate(scope.space, scope.world) as Iterable<{ body: string }>)
-					consider("episode", JSON.parse(row.body));
+					consider("episode", readEpisodeBody(row.body));
 		}
 		const output = {
 			snapshot_seq,
@@ -976,12 +1097,18 @@ export class MaterialStore {
 				id: item.id,
 				commit_seq: item.seq,
 				time: item.time,
+				happen:
+					item.kind === "episode"
+						? ((item.value as Episode).happen ?? { kind: "unknown" })
+						: undefined,
 				time_kind:
-					basis === "authored_at"
-						? "authored_at"
-						: item.kind === "material"
-							? "received_at"
-							: "recorded_at",
+					basis === "happen"
+						? "happen"
+						: basis === "authored_at"
+							? "authored_at"
+							: item.kind === "material"
+								? "received_at"
+								: "review",
 				channel: item.kind === "material" ? (item.value as Material).channel : undefined,
 				thread: item.value.thread,
 				source_kind:
@@ -1019,11 +1146,15 @@ export class MaterialStore {
 				output.items.push({
 					kind: item.kind,
 					id: item.id,
+					commit_seq: q ? undefined : item.seq,
 					stale: corrections.length > 0,
 					requires_expansion: true,
 				});
-				if (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes)
+				if (Buffer.byteLength(JSON.stringify(output), "utf8") > maxBytes) {
 					output.items.pop();
+					output.diagnostics.returned = output.items.length;
+					if (!q) break;
+				}
 				output.diagnostics.returned = output.items.length;
 			}
 		}
@@ -1057,6 +1188,11 @@ export class MaterialStore {
 		const people = new Set(dependent.filter((row) => row.revision === 1).map((row) => row.id));
 		return {
 			person_ids: [...people],
+			setting_versions: this.settings.affected(
+				scope,
+				new Set(episodes.keys()),
+				new Set(source_ids),
+			),
 			person_reviews: dependent.filter((row) => !people.has(row.id)),
 			source_ids,
 			episodes: [...episodes]
@@ -1100,6 +1236,7 @@ export class MaterialStore {
 			if (preview.preview_token !== input.preview_token)
 				throw new MaterialError("STALE_PREVIEW");
 			const deleted = new Set(preview.source_ids);
+			this.settings.erase(scope, preview.setting_versions);
 			for (const id of preview.person_ids)
 				this.#db.prepare("DELETE FROM people WHERE id=?").run(id);
 			for (const review of preview.person_reviews) {
