@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+app=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$#" -eq 0 ]; then set -- setup; fi
+exec "$app/node" "$app/cli.mjs" "$@"

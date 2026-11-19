@@ -11,6 +11,8 @@
 		"lint": "vp lint src tests scripts && vp fmt --check .",
 		"typecheck": "tsc --noEmit",
 		"build": "vp pack",
+		"release:portable": "vp run build && node scripts/release/portable.mjs",
+		"release:windows": "vp run release:portable",
 		"test": "vp run build && vp test",
 		"check": "vp run contracts:check && vp check && vp run test",
 		"start": "node dist/src/mcp-main.js",
