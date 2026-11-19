@@ -4,7 +4,21 @@ Labradorite 为 AI 角色提供可追溯的长期记忆。AI 通过 **stdio MCP*
 
 例如，角色看了一段视频的前两分钟。上层 AI 可以保存视频、报告实际观看区间，再把自己的理解整理成一条经历。以后问起这件事时，AI 可以找到当时的记录，查看原视频和后续更正。视觉理解与经历整理由上层模型完成，Labradorite 负责保存、关联和检索。
 
-## 从源码接入
+## 安装与接入
+
+### Linux、macOS 和 Windows 便携版
+
+从 [GitHub Releases](https://github.com/Siornya/Labradorite/releases) 下载对应系统的 ZIP，完整解压到准备长期保留的目录。包内自带 Node.js 和运行依赖。
+
+| 系统                                    | 下载文件                      | 开始配置                                                  |
+| --------------------------------------- | ----------------------------- | --------------------------------------------------------- |
+| Linux（glibc，`uname -m` 为 `x86_64`）  | `Labradorite-linux-x64.zip`   | 解压后进入 `Labradorite` 目录，运行 `./labradorite setup` |
+| Linux（glibc，`uname -m` 为 `aarch64`） | `Labradorite-linux-arm64.zip` | 同上                                                      |
+| macOS（Apple Silicon）                  | `Labradorite-macos-arm64.zip` | 解压后进入 `Labradorite` 目录，运行 `./labradorite setup` |
+| macOS（Intel）                          | `Labradorite-macos-x64.zip`   | 同上                                                      |
+| Windows x64                             | `Labradorite-windows-x64.zip` | 解压后双击 `labradorite.cmd`                              |
+
+### 从源码接入
 
 准备 Node.js 24 或更高版本、[Vite+](https://viteplus.dev/) 的 `vp` 命令，以及支持 stdio MCP 的客户端。在仓库根目录运行：
 
@@ -14,7 +28,9 @@ vpr build
 vpr setup
 ```
 
-首次在终端运行 `setup` 时可以进行 embedding 配置：
+### 连接 MCP 客户端
+
+两种安装方式使用同一个配置向导。首次运行时可以选择检索方式：
 
 - **内置 Qwen**：自动下载并配置 llama.cpp 和 Qwen3-Embedding-0.6B Q8_0（总共约 650 MB）
 - **手动配置 embedding**：填写已有服务的完整接口地址和模型名，或选择自己的 GGUF 文件
@@ -31,7 +47,7 @@ vpr setup
 
 服务默认启动 Web 查看器。点击「打开记忆库」即可浏览经历、人物和相册，在「回顾记录」里可以核对或撤销模型保存的修改。
 
-使用命令`vpr viewer:url`会输出登录链接和与实际端口匹配的 SSH 转发命令，可以用于远程访问。
+在 Linux 或 macOS 便携版目录运行 `./labradorite viewer:url`，即可获得登录链接和与实际端口匹配的 SSH 转发命令。Windows 使用 `.\labradorite.cmd viewer:url`，源码版使用 `vpr viewer:url`。
 
 切换记忆库、远程连接的更多教程和其他操作见 [Web 查看器使用指南](docs/webview.md)。
 
@@ -47,7 +63,7 @@ vpr setup
 | 管理相册       | `memory_import_media`、`memory_album`                     | 从入口目录归档照片和受支持的 MP4，按当前空间与世界浏览。                               |
 | 检查与删除     | `memory_status`、`memory_preview_delete`、`memory_delete` | 查看整理进度；删除前先查看受影响的材料、更正链和经历修订。                             |
 
-启用语义检索后，可在项目目录运行以下命令，将路径替换为 setup 输出的运行配置路径：
+启用语义检索后，可在项目目录运行以下命令，将路径替换为 setup 输出的运行配置路径。Linux 和 macOS 便携版使用 `./labradorite index "运行配置路径"`，Windows 使用 `.\labradorite.cmd index "运行配置路径"`。
 
 ```sh
 vp run index "/path/to/runtime.json"
@@ -70,5 +86,7 @@ vp run index "/path/to/runtime.json"
 ## 开发
 
 项目使用 TypeScript、Vite+、pnpm、Oxc 和 Vitest。在根目录运行 `vpr check`，可检查生成契约、格式和类型，并完成构建与测试。
+
+在 GitHub Actions 中手动运行 **Portable packages** 可以下载试用构建。发布 GitHub Release 时，该工作流会按标签构建，待五个便携包全部通过解压验证后上传到该 Release。也可以在 Linux、macOS 或 Windows 构建机运行 `vpr release:portable`，在 `dist/` 中生成与本机匹配的 ZIP。Linux 构建机需安装 `zip`。
 
 模块职责、进程关系和存储数据流见[项目结构设计](docs/architecture.md)。

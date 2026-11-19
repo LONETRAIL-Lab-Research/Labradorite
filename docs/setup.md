@@ -1,5 +1,28 @@
 # 配置说明
 
+## Linux、macOS 和 Windows 便携版
+
+Linux 用户按 `uname -m` 选择 x64 或 ARM64 附件。以下是 x64 的安装示例：
+
+```sh
+unzip Labradorite-linux-x64.zip
+cd Labradorite
+./labradorite setup
+```
+
+macOS 用户可在苹果菜单的“关于本机”里确认机型。Apple 芯片选择 `Labradorite-macos-arm64.zip`，Intel 处理器选择 `Labradorite-macos-x64.zip`。双击 ZIP 解压后，在终端进入 `Labradorite` 目录，运行 `./labradorite setup`。
+
+在便携版目录中，将下文命令里的 `vpr` 或 `vp run` 换成 `./labradorite`。在 SSH 服务器上，连接 MCP 后运行 `./labradorite viewer:url` 即可获取端口转发命令。
+
+Windows 用户完整解压 Release 附件后双击 `labradorite.cmd`。也可以在解压目录打开 PowerShell，将文档命令中的 `vpr` 或 `vp run` 换成 `.\labradorite.cmd`，例如：
+
+```powershell
+.\labradorite.cmd setup "D:\LabradoriteData" --embedding lexical
+.\labradorite.cmd viewer:url
+```
+
+`mcp.json` 会指向解压目录中的 Node.js 运行程序 和服务文件。升级时，先关闭使用该包的 MCP 服务和查看器，将新版解压到固定位置，用原数据目录重新运行 setup。如果解压位置改变，将新生成的 `Labradorite` 条目复制回 MCP 客户端。记忆库存放在数据目录，建议与程序目录分开。
+
 ## 手动配置 embedding
 
 手动填写现有服务后 setup 会向填写的接口发送一条测试短句，自动获取向量维度。
