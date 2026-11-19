@@ -129,7 +129,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_review",
 				description:
-					"Read materials with memory_recall/memory_read first. Submit your own review proposal. A successful save starts semantic indexing in the background. Call with {} to finish without a proposal. Waits up to one second for indexing. If indexing.state is running, check memory_status().retrieval.indexing for progress and the final state. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Use happen for event time with precision and cited evidence, separately from review. Later mentions of the same event should revise the existing episode; omission preserves its event time. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With setting, reason and episodes, propose one setting change based on existing episode revisions. New and owner-maintained settings need owner approval. For a person review with episodes, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
+					"Read materials with memory_recall/memory_read first. Submit your own review proposal. When automatic indexing is enabled, a successful save starts semantic indexing in the background. Call with {} to explicitly request indexing without a proposal, including in manual-only mode. Waits up to one second for indexing. If indexing.state is running, check memory_status().retrieval.indexing for progress and the final state. Set dry_run=true to preview without writing; omit it or set false to save directly. With source_ids, save or revise an episode grounded in readable materials. Use happen for event time with precision and cited evidence, separately from review. Later mentions of the same event should revise the existing episode; omission preserves its event time. Expressed interpretations require character statements. Include person_review to link a significant person and optionally update their impression atomically. With setting, reason and episodes, propose one setting change based on existing episode revisions. New and owner-maintained settings need owner approval. For a person review with episodes, cite existing episode IDs and revisions to review a person directly. Find candidates with memory_people; create with name and identity or update with id and expected_revision. Omit impression to only link evidence, or supply the complete new judgment. Use snapshot_seq as base_seq and a stable operation_id; reread on conflict.",
 				inputSchema: reviewSchema,
 			},
 			{
@@ -243,7 +243,7 @@ export function createMemoryServer(memory: {
 							proposal,
 							dry_run,
 						);
-						if (!dry_run) void memory.index.run();
+						if (!dry_run) memory.index.afterSave();
 						break;
 					}
 					const person = Object.hasOwn(proposal, "episodes");
@@ -255,7 +255,7 @@ export function createMemoryServer(memory: {
 						result = person
 							? memory.store.reviewPerson(memory.principal, memory.scope, proposal)
 							: memory.store.reviewEpisode(memory.principal, memory.scope, proposal);
-						void memory.index.run();
+						memory.index.afterSave();
 					}
 					break;
 				}

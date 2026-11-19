@@ -15,7 +15,7 @@ export class ReviewIndex {
 		private store: MaterialStore,
 		private scope: MemoryScope,
 		private enabled: boolean,
-		private idleMinutes = 120,
+		private idleMinutes: number,
 	) {
 		this.arm();
 	}
@@ -31,7 +31,7 @@ export class ReviewIndex {
 	}
 
 	private arm() {
-		if (!this.enabled || this.closed) return;
+		if (!this.enabled || this.closed || this.idleMinutes === 0) return;
 		this.timer = setTimeout(() => void this.run(true), this.idleMinutes * 60_000);
 		this.timer.unref();
 	}
@@ -48,7 +48,11 @@ export class ReviewIndex {
 		}
 	}
 
-	async run(idle = false): Promise<Outcome> {
+	afterSave() {
+		if (this.idleMinutes > 0) void this.run();
+	}
+
+	private async run(idle = false): Promise<Outcome> {
 		if (!this.enabled) return { state: "disabled" };
 		if (this.closed) return { state: "stopped", reason: "INDEX_CANCELLED" };
 		if (this.job) {

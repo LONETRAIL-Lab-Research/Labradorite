@@ -1,5 +1,5 @@
 import { MaterialStore } from "@/storage/materials.js";
-import { loadRuntimeConfig } from "@/runtime-config.js";
+import { openRuntimeConfig } from "@/runtime-config.js";
 import { runtimeProvider } from "@/providers/local-embedding.js";
 import { EmbeddingError, type EmbeddingProvider } from "@/providers/embedding.js";
 import { indexReason } from "@/retrieval/index-status.js";
@@ -24,7 +24,7 @@ if (args.length === 1 && args[0] === "--help") {
 	process.on("SIGINT", cancel);
 	process.on("SIGTERM", cancel);
 	try {
-		const config = loadRuntimeConfig(args[0]!);
+		const config = openRuntimeConfig(args[0]!);
 		provider = runtimeProvider(config);
 		if (!provider) throw new EmbeddingError("EMBEDDING_DISABLED");
 		// Require an existing library; a typo must not create an empty database.

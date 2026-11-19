@@ -23,13 +23,14 @@ defineProps<{
 				>空闲索引时长（分钟）<input
 					required
 					type="number"
-					min="1"
+					min="0"
 					max="35791"
 					name="idle"
 					:value="idle"
 			/></label>
 			<small
-				>最后一次 MCP 工具调用结束后，连续空闲达到此时长时开始索引。默认 120 分钟。</small
+				>填 0
+				关闭空闲和回顾保存后的自动索引。填正数启用自动索引，并指定连续空闲多少分钟后开始索引。</small
 			>
 			<template v-if="budget != null">
 				<label

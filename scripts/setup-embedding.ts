@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { createServer, type AddressInfo } from "node:net";
 import select from "@inquirer/select";
 import input from "@inquirer/input";
-import type { RuntimeConfig } from "@/runtime-config.js";
+import { indexIdleMinutes, type RuntimeConfig } from "@/runtime-config.js";
 import { CompatibleEmbeddingProvider } from "@/providers/embedding.js";
 import { LocalEmbeddingProvider } from "@/providers/local-embedding.js";
 import { installEngine, prepareLocalModel } from "@/providers/llama-install.js";
@@ -57,7 +57,7 @@ async function selectEmbedding(ask: (message: string) => Promise<string>): Promi
 				{
 					value: "external",
 					name: "使用已有服务",
-					description: "Ollama、llama.cpp 或其他兼容接口",
+					description: "索引会向该服务发送记忆片段，可在查看器设置中关闭自动索引",
 				},
 				{ value: "file", name: "使用自己的 GGUF 文件" },
 			],
@@ -132,9 +132,11 @@ export async function configureEmbedding(runtime: RuntimeConfig, args: Options) 
 		});
 		delete runtime.local_model;
 	} else throw new Error("未知的 embedding 模式。");
+	const minutes = indexIdleMinutes(runtime);
+	console.info("Embedding 已验证，向量维度 " + runtime.embedding.dimensions + "。");
 	console.info(
-		"Embedding 已验证，向量维度 " +
-			runtime.embedding.dimensions +
-			"。MCP 服务会在回顾完成或空闲时自动建立索引。",
+		minutes === 0
+			? "自动索引已关闭，可手动建立索引。"
+			: `回顾保存成功或连续空闲 ${minutes} 分钟后会自动建立索引。在查看器设置中将空闲时长设为 0 可关闭。`,
 	);
 }

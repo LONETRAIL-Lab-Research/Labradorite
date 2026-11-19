@@ -1,7 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
-import Database from "better-sqlite3";
-import { renameSync, rmSync, writeFileSync } from "node:fs";
-import { loadRuntimeConfig, type RuntimeConfig } from "./runtime-config.js";
+import { createHash } from "node:crypto";
+import {
+	indexIdleMinutes,
+	loadRuntimeConfig,
+	replaceRuntimeConfig,
+	withRuntimeConfigLock,
+	type RuntimeConfig,
+} from "./runtime-config.js";
 
 export function libraryMatches(a: RuntimeConfig, b: RuntimeConfig) {
 	return (
@@ -14,14 +18,8 @@ export function libraryMatches(a: RuntimeConfig, b: RuntimeConfig) {
 
 export function settingsPage(path: string, selected: RuntimeConfig, form?: URLSearchParams) {
 	if (!form) return readOrSave(path, selected);
-	// A stable SQLite lock file serializes writers and releases its lock on process exit.
 	try {
-		const lock = new Database(path + ".lock");
-		try {
-			return lock.transaction(() => readOrSave(path, selected, form)).immediate();
-		} finally {
-			lock.close();
-		}
+		return withRuntimeConfigLock(path, () => readOrSave(path, selected, form));
 	} catch {
 		return { status: 503, error: "暂时无法锁定运行配置，请稍后重试。" };
 	}
@@ -56,30 +54,23 @@ function readOrSave(path: string, selected: RuntimeConfig, form?: URLSearchParam
 			/^\d+$/.test(form.get(key)!) ? Number(form.get(key)) : NaN;
 		const idle = number("idle");
 		const budget = number("budget");
-		if (!Number.isSafeInteger(idle) || idle < 1 || idle > 35791)
-			return message(400, "空闲时长须为 1 至 35791 分钟的整数。");
+		if (!Number.isSafeInteger(idle) || idle < 0 || idle > 35791)
+			return message(400, "空闲时长须为 0 至 35791 分钟的整数。");
 		if (current.embedding && (!Number.isSafeInteger(budget) || budget < 0 || budget > 100000))
 			return message(400, "每日请求上限须为 0 至 100000 的整数。");
 		current.index_idle_minutes = idle;
 		if (current.embedding) current.embedding.max_requests_per_day = budget;
-		const temp = path + "." + randomUUID() + ".tmp";
 		try {
-			writeFileSync(temp, JSON.stringify(current, null, "\t") + "\n", {
-				flag: "wx",
-				mode: 0o600,
-			});
-			renameSync(temp, path);
+			replaceRuntimeConfig(path, current);
 		} catch {
 			return message(500, "保存失败，请检查配置目录的写入权限。");
-		} finally {
-			rmSync(temp, { force: true });
 		}
 		return { status: 303 };
 	}
 	return {
 		status: 200,
 		revision,
-		idle: current.index_idle_minutes ?? 120,
+		idle: indexIdleMinutes(current),
 		budget: current.embedding?.max_requests_per_day,
 	};
 }

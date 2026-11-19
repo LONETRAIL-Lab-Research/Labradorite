@@ -63,6 +63,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 				space: "test",
 				character: "reader",
 				world: "real",
+				index_idle_minutes: 120,
 				embedding: {
 					endpoint: `http://127.0.0.1:${address.port}/v1/embeddings`,
 					model: "fixture",

@@ -3,7 +3,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { EmbeddingProvider } from "./providers/embedding.js";
 import { runtimeProvider } from "./providers/local-embedding.js";
-import { loadRuntimeConfig, type RuntimeConfig } from "./runtime-config.js";
+import { indexIdleMinutes, openRuntimeConfig, type RuntimeConfig } from "./runtime-config.js";
 import { serveViewerSearch } from "./viewer-search.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createMemoryServer } from "./transport/mcp.js";
@@ -40,11 +40,11 @@ try {
 	if (paths.length !== 1 || paths[0]!.startsWith("--"))
 		throw new Error("Usage: mcp-main runtime.json [--no-webview]");
 	const runtime = paths[0]!;
-	const config = loadRuntimeConfig(runtime);
+	const config = openRuntimeConfig(runtime);
 	store = new MaterialStore(config.database, undefined, getProvider(config));
 	const scope = { space: config.space, character: config.character, world: config.world };
 	store.bindScope(scope);
-	index = new ReviewIndex(store, scope, !!config.embedding, config.index_idle_minutes);
+	index = new ReviewIndex(store, scope, !!config.embedding, indexIdleMinutes(config));
 	const server = createMemoryServer({
 		index,
 		store,
