@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
+import { ReviewIndex } from "@/retrieval/review-index.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +55,56 @@ const episode = (
 	activity_state: "active",
 	unknowns: [],
 });
+test("overlapping review saves index the surviving revisions and leave raw sources pending", async () => {
+	let unblock!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		unblock = resolve;
+	});
+	const calls: string[] = [];
+	const store = new MaterialStore(":memory:", undefined, {
+		config,
+		async embed(input) {
+			calls.push(...input);
+			await gate;
+			return { vectors: input.map(() => [1, 0]), tokens: null };
+		},
+	});
+	const index = new ReviewIndex(store, scope, true, 120);
+	try {
+		const sources = [store.submit("client", scope, material("raw", "原文")).material.id];
+		const first = store.reviewEpisode("client", scope, episode(store, sources, "首版")).episode;
+		index.afterSave(first);
+		const second = store.reviewEpisode("client", scope, {
+			...episode(store, sources, "中间版本", "second"),
+			id: first.id,
+			expected_revision: first.revision,
+		}).episode;
+		index.afterSave(second);
+		const final = store.reviewEpisode("client", scope, {
+			...episode(store, sources, "最终版本", "final"),
+			id: first.id,
+			expected_revision: second.revision,
+		}).episode;
+		index.afterSave(final);
+		const other = store.reviewEpisode(
+			"client",
+			scope,
+			episode(store, sources, "另一次经历", "other"),
+		).episode;
+		index.afterSave(other);
+		unblock();
+		await vi.waitFor(() => assert.equal(store.retrievalStatus(scope).embedded_chunks, 2));
+		assert.equal(calls.length, 3);
+		assert.ok(calls.some((text) => text.includes("最终版本")));
+		assert.ok(calls.some((text) => text.includes("另一次经历")));
+		assert.equal(store.retrievalStatus(scope).pending_chunks, 1);
+	} finally {
+		unblock();
+		await index.close();
+		store.close();
+	}
+});
+
 function erase(store: MaterialStore, id: string) {
 	store.delete("client", scope, {
 		operation_id: `erase-${id}`,

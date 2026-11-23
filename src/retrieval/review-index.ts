@@ -1,6 +1,8 @@
 import type { MaterialStore, MemoryScope } from "../storage/materials.js";
 import { EmbeddingError } from "../providers/embedding.js";
 
+import type { EpisodeRevision } from "./index.js";
+
 type Outcome = { state: "completed" | "disabled" | "stopped"; reason?: string };
 
 export class ReviewIndex {
@@ -8,7 +10,12 @@ export class ReviewIndex {
 	private active = 0;
 	private closed = false;
 	private job:
-		| { controller: AbortController; idle: boolean; result: Promise<Outcome> }
+		| {
+				controller: AbortController;
+				idle: boolean;
+				targeted: boolean;
+				result: Promise<Outcome>;
+		  }
 		| undefined;
 
 	constructor(
@@ -48,33 +55,38 @@ export class ReviewIndex {
 		}
 	}
 
-	afterSave() {
-		if (this.idleMinutes > 0) void this.run();
+	afterSave({ id, revision }: EpisodeRevision) {
+		if (this.idleMinutes > 0) void this.run(false, { id, revision });
 	}
 
-	private async run(idle = false): Promise<Outcome> {
+	private async run(idle = false, episode?: EpisodeRevision): Promise<Outcome> {
 		if (!this.enabled) return { state: "disabled" };
 		if (this.closed) return { state: "stopped", reason: "INDEX_CANCELLED" };
-		if (this.job) {
-			if (!idle && this.job.controller.signal.aborted) {
-				await this.job.result;
-				return this.run();
+		const idleTimer = this.timer;
+		while (this.job) {
+			if (!episode && !this.job.targeted && !this.job.controller.signal.aborted) {
+				if (!idle) this.job.idle = false;
+				return this.job.result;
 			}
-			if (!idle) this.job.idle = false;
-			return this.job.result;
+			await this.job.result;
+			if (this.closed || (idle && (this.active || this.timer !== idleTimer)))
+				return { state: "stopped", reason: "INDEX_CANCELLED" };
 		}
 		const controller = new AbortController();
-		const result = this.drain(controller.signal).finally(() => {
+		const result = this.drain(controller.signal, episode).finally(() => {
 			this.job = undefined;
 		});
-		this.job = { controller, idle, result };
+		this.job = { controller, idle, targeted: !!episode, result };
 		return result;
 	}
 
-	private async drain(signal: AbortSignal): Promise<Outcome> {
+	private async drain(signal: AbortSignal, episode?: EpisodeRevision): Promise<Outcome> {
 		try {
 			if (this.store.retrievalStatus(this.scope).pending_chunks) {
-				const result = await this.store.indexAll(this.scope, { signal });
+				const result = await this.store.indexAll(
+					this.scope,
+					episode ? { signal, episode } : { signal },
+				);
 				if (result.stopped) return { state: "stopped", reason: result.stopped };
 			}
 			return { state: "completed" };

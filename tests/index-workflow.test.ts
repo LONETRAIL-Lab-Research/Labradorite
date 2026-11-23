@@ -403,12 +403,27 @@ test.each([120, 1, 0])(
 		try {
 			if (minutes === 0) {
 				index.begin();
-				index.afterSave();
+				const source = store.recall(scope, { query: "", limit: 1 }).items[0] as {
+					id: string;
+				};
+				const saved = store.reviewEpisode("client", scope, {
+					operation_id: "review",
+					base_seq: store.sequence(scope),
+					title: "旅行",
+					summary: "周末出发",
+					source_ids: [source.id],
+					beats: [{ text: "出发", source_ids: [source.id] }],
+					interpretations: [],
+					thread: null,
+					activity_state: "completed",
+					unknowns: [],
+				});
+				index.afterSave(saved.episode);
 				index.end();
 				await vi.advanceTimersByTimeAsync(120 * 60_000);
 				assert.equal(store.retrievalStatus(scope).usage.requests, 0);
 				assert.equal((await index.finishReview()).state, "completed");
-				assert.equal(store.retrievalStatus(scope).embedded_chunks, 10);
+				assert.equal(store.retrievalStatus(scope).embedded_chunks, 11);
 				return;
 			}
 			await vi.advanceTimersByTimeAsync(delay - 1);
