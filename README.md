@@ -87,6 +87,6 @@ vp run index "/path/to/runtime.json"
 
 项目使用 TypeScript、Vite+、pnpm、Oxc 和 Vitest。在根目录运行 `vpr check`，可检查生成契约、格式和类型，并完成构建与测试。
 
-在 GitHub Actions 中手动运行 **Portable packages** 可以下载试用构建。发布 GitHub Release 时，该工作流会按标签构建，待五个便携包全部通过解压验证后上传到该 Release。也可以在 Linux、macOS 或 Windows 构建机运行 `vpr release:portable`，在 `dist/` 中生成与本机匹配的 ZIP。Linux 构建机需安装 `zip`。
+在 GitHub Actions 中手动运行 **release** 可以下载试用构建。发布 GitHub Release 时，该工作流会按标签构建，待五个便携包全部通过解压验证后上传到该 Release。也可以在 Linux、macOS 或 Windows 构建机运行 `vpr release`，在 `dist/` 中生成与本机匹配的 ZIP。Linux 构建机需安装 `zip`。
 
 模块职责、进程关系和存储数据流见[项目结构设计](docs/architecture.md)。

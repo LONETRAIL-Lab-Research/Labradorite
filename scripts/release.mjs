@@ -20,7 +20,7 @@ const platform = { win32: "windows", linux: "linux", darwin: "macos" }[process.p
 if (!platform) throw new Error("请在 Windows、Linux 或 macOS 上构建便携包。");
 const node = windows ? "node.exe" : "node";
 const launcher = windows ? "labradorite.cmd" : "labradorite";
-const root = fileURLToPath(new URL("../../", import.meta.url));
+const root = fileURLToPath(new URL("../", import.meta.url));
 const work = mkdtempSync(join(tmpdir(), "labradorite-release-"));
 const name = "Labradorite";
 const app = join(work, name);
