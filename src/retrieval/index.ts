@@ -13,7 +13,9 @@ import {
 } from "./algorithms.js";
 
 export const CHUNK_VERSION = "codepoints-1024-overlap128-v1";
+export type EpisodeRevision = Pick<Episode, "id" | "revision">;
 export interface IndexOptions {
+	episode?: EpisodeRevision;
 	signal?: AbortSignal;
 	onProgress?: (status: ReturnType<SearchIndex["status"]>) => void;
 }
@@ -264,6 +266,18 @@ export class SearchIndex {
 	async index(scope: MemoryScope, maxBatches: number, options: IndexOptions = {}) {
 		if (this.#busy) throw new EmbeddingError("EMBEDDING_BUSY");
 		if (!this.provider) throw new EmbeddingError("EMBEDDING_DISABLED");
+		const episode = options.episode;
+		const pending = this.db
+			.prepare(`SELECT c.key,c.id,c.kind,c.text,c.start FROM search_chunks c
+			WHERE c.space=? AND c.world=? AND NOT EXISTS(SELECT 1 FROM search_vectors v WHERE v.chunk=c.key AND v.profile=?)
+			${episode ? "AND c.kind='episode' AND c.id=? AND c.revision=?" : ""}
+			ORDER BY c.rowid LIMIT 8`)
+			.bind(
+				scope.space,
+				scope.world,
+				this.profile,
+				...(episode ? [episode.id, episode.revision] : []),
+			);
 		const job = this.#job(scope);
 		job.claim();
 		this.#busy = true;
@@ -281,7 +295,7 @@ export class SearchIndex {
 			stopped: string | null = null;
 		const finish = this.db.transaction((onlyIfComplete: boolean) => {
 			const status = this.status(scope);
-			const complete = status.pending_chunks === 0;
+			const complete = episode ? !pending.get() : status.pending_chunks === 0;
 			if (onlyIfComplete && !complete) return undefined;
 			if (complete) stopped = null;
 			job.update(
@@ -312,11 +326,7 @@ export class SearchIndex {
 					stopped = "INDEX_CANCELLED";
 					break;
 				}
-				const rows = this.db
-					.prepare(`SELECT c.key,c.id,c.kind,c.text,c.start FROM search_chunks c
-					WHERE c.space=? AND c.world=? AND NOT EXISTS(SELECT 1 FROM search_vectors v WHERE v.chunk=c.key AND v.profile=?)
-					ORDER BY c.rowid LIMIT 8`)
-					.all(scope.space, scope.world, this.profile) as Chunk[];
+				const rows = pending.all() as Chunk[];
 				if (!rows.length) {
 					// Finish against one snapshot. A concurrent material write can add
 					// pending chunks after selection, in which case keep processing.

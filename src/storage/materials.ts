@@ -440,7 +440,9 @@ export class MaterialStore {
 				reason: input.reason,
 			});
 		});
-		return { change: JSON.parse(op.result) as SettingChange, replayed: op.replayed };
+		const change = JSON.parse(op.result) as SettingChange;
+		if (change.state === "rejected") throw new MaterialError("NOT_FOUND");
+		return { change, replayed: op.replayed };
 	}
 	saveOwnerSetting(scope: MemoryScope, operation_id: string, input: unknown, policy: unknown) {
 		if (!validateSetting(input) || !/^[a-zA-Z0-9_-]{1,128}$/.test(operation_id))
@@ -1188,11 +1190,7 @@ export class MaterialStore {
 		const people = new Set(dependent.filter((row) => row.revision === 1).map((row) => row.id));
 		return {
 			person_ids: [...people],
-			setting_versions: this.settings.affected(
-				scope,
-				new Set(episodes.keys()),
-				new Set(source_ids),
-			),
+			settings: this.settings.affected(scope, new Set(episodes.keys()), new Set(source_ids)),
 			person_reviews: dependent.filter((row) => !people.has(row.id)),
 			source_ids,
 			episodes: [...episodes]
@@ -1201,23 +1199,27 @@ export class MaterialStore {
 		};
 	}
 	previewDelete(scope: MemoryScope, input: unknown) {
+		return this.#deletePlan(scope, input).preview;
+	}
+	#deletePlan(scope: MemoryScope, input: unknown) {
 		if (!validatePreviewDelete(input)) throw new MaterialError("VALIDATION_ERROR");
-		const snapshot_seq = this.sequence(scope),
-			impact = this.#deletionImpact(scope, input.source_ids);
+		const snapshot_seq = this.sequence(scope);
+		const { settings, ...impact } = this.#deletionImpact(scope, input.source_ids);
 		const preview_token = createHmac("sha256", this.#key)
 			.update(
 				canonical({
 					scope,
 					snapshot_seq,
 					requested_ids: [...input.source_ids].sort(),
-					impact,
+					impact: { ...impact, setting_versions: settings.versions },
 				}),
 			)
 			.digest("hex");
-		return {
+		const preview = {
 			dry_run: true,
 			snapshot_seq,
 			...impact,
+			setting_versions: settings.visibleVersions,
 			preview_token,
 			backup_cleanup: "not_supported",
 			counts: {
@@ -1228,15 +1230,18 @@ export class MaterialStore {
 				revisions: impact.episodes.reduce((n, e) => n + e.revisions, 0),
 			},
 		};
+		return { preview, settingVersions: settings.versions };
 	}
 	delete(principal: string, scope: MemoryScope, input: unknown) {
 		if (!validateDelete(input)) throw new MaterialError("VALIDATION_ERROR");
 		const operation = this.#operation(principal, scope, "delete", input, () => {
-			const preview = this.previewDelete(scope, { source_ids: input.source_ids });
+			const { preview, settingVersions } = this.#deletePlan(scope, {
+				source_ids: input.source_ids,
+			});
 			if (preview.preview_token !== input.preview_token)
 				throw new MaterialError("STALE_PREVIEW");
 			const deleted = new Set(preview.source_ids);
-			this.settings.erase(scope, preview.setting_versions);
+			this.settings.erase(scope, settingVersions);
 			for (const id of preview.person_ids)
 				this.#db.prepare("DELETE FROM people WHERE id=?").run(id);
 			for (const review of preview.person_reviews) {

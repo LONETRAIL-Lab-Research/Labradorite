@@ -149,13 +149,16 @@ test("viewer settings persist for the selected library and reject stale, invalid
 	try {
 		browser = await viewer(f.runtime, f.dir);
 		const page = await (await browser.settings()).text();
-		assert.match(page, /name="idle" value="120"/);
+		assert.match(page, /name="idle" value="0"/);
 		const revision = /name="revision" value="([^"]+)"/.exec(page)![1]!;
 		const form = new URLSearchParams({ revision, idle: "30", budget: "5" });
 		assert.equal((await browser.settings(form, "https://example.invalid")).status, 403);
 		form.set("budget", "-1");
 		assert.equal((await browser.settings(form)).status, 400);
-		assert.deepEqual(JSON.parse(readFileSync(f.runtime, "utf8")), f.config);
+		assert.deepEqual(JSON.parse(readFileSync(f.runtime, "utf8")), {
+			...f.config,
+			index_idle_minutes: 0,
+		});
 		form.set("budget", "5");
 		const secondViewer = await viewer(f.runtime, f.dir);
 		try {
@@ -170,7 +173,12 @@ test("viewer settings persist for the selected library and reject stale, invalid
 			embedding: { ...f.config.embedding, max_requests_per_day: 5 },
 		});
 		assert.equal((await browser.settings(form)).status, 409);
-		assert.match(await (await browser.settings()).text(), /name="idle" value="30"/);
+		const enabledPage = await (await browser.settings()).text();
+		assert.match(enabledPage, /name="idle" value="30"/);
+		form.set("revision", /name="revision" value="([^"]+)"/.exec(enabledPage)![1]!);
+		form.set("idle", "0");
+		assert.equal((await browser.settings(form)).status, 303);
+		assert.equal(JSON.parse(readFileSync(f.runtime, "utf8")).index_idle_minutes, 0);
 		assert.match(await browser.status(), /今日请求：0 \/ 5/);
 		const { embedding: _model, ...lexical } = f.config;
 		writeFileSync(f.runtime, JSON.stringify(lexical));
@@ -371,8 +379,8 @@ test("an expired indexing lease can be resumed and its old response cannot overw
 	}
 });
 
-test.each([undefined, 1])(
-	"idle indexing waits for the configured minutes after all calls finish (%s)",
+test.each([120, 1, 0])(
+	"automatic indexing respects the configured idle time and manual-only mode (%s minutes)",
 	async (minutes) => {
 		const dir = mkdtempSync(join(tmpdir(), "idle-index-"));
 		const database = join(dir, "library.db");
@@ -391,8 +399,33 @@ test.each([undefined, 1])(
 		});
 		vi.useFakeTimers();
 		const index = new ReviewIndex(store, scope, true, minutes);
-		const delay = (minutes ?? 120) * 60_000;
+		const delay = minutes * 60_000;
 		try {
+			if (minutes === 0) {
+				index.begin();
+				const source = store.recall(scope, { query: "", limit: 1 }).items[0] as {
+					id: string;
+				};
+				const saved = store.reviewEpisode("client", scope, {
+					operation_id: "review",
+					base_seq: store.sequence(scope),
+					title: "旅行",
+					summary: "周末出发",
+					source_ids: [source.id],
+					beats: [{ text: "出发", source_ids: [source.id] }],
+					interpretations: [],
+					thread: null,
+					activity_state: "completed",
+					unknowns: [],
+				});
+				index.afterSave(saved.episode);
+				index.end();
+				await vi.advanceTimersByTimeAsync(120 * 60_000);
+				assert.equal(store.retrievalStatus(scope).usage.requests, 0);
+				assert.equal((await index.finishReview()).state, "completed");
+				assert.equal(store.retrievalStatus(scope).embedded_chunks, 11);
+				return;
+			}
 			await vi.advanceTimersByTimeAsync(delay - 1);
 			index.begin();
 			index.begin();

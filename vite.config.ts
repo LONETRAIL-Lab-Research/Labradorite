@@ -12,6 +12,10 @@ export default defineConfig({
 		entry: {
 			"src/mcp-main": "src/mcp-main.ts",
 			"src/viewer": "src/viewer.ts",
+			setup: "scripts/setup.ts",
+			index: "scripts/index.ts",
+			library: "scripts/library.ts",
+			"viewer-url": "scripts/viewer-url.js",
 		},
 		platform: "node",
 		format: "esm",

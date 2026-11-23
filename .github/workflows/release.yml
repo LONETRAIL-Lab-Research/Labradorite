@@ -1,0 +1,74 @@
+name: release
+
+on:
+    workflow_dispatch:
+    release:
+        types: [published]
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: ubuntu-24.04
+                      target: linux-x64
+                    - runner: ubuntu-24.04-arm
+                      target: linux-arm64
+                    - runner: windows-2025
+                      target: windows-x64
+                    - runner: macos-15
+                      target: macos-arm64
+                    - runner: macos-15-intel
+                      target: macos-x64
+        runs-on: ${{ matrix.runner }}
+        steps:
+            - uses: actions/checkout@v6
+            - uses: voidzero-dev/setup-vp@v1.15.0
+              with:
+                  node-version: "26"
+                  run-install: false
+            - run: vp install --frozen-lockfile
+            - run: vp run release
+            - name: Verify extracted package
+              shell: bash
+              env:
+                  TARGET: ${{ matrix.target }}
+              run: |
+                  archive="$PWD/dist/Labradorite-$TARGET.zip"
+                  cd "$(mktemp -d)"
+                  unzip -q "$archive"
+                  cd Labradorite
+                  if [[ $RUNNER_OS == Windows ]]; then
+                    ./labradorite.cmd setup data --embedding lexical
+                  else
+                    ./labradorite setup data --embedding lexical
+                  fi
+                  ./node -e "const c=require('./data/mcp.json').mcpServers.Labradorite; require('node:fs').accessSync(c.args[0]); require('better-sqlite3')(':memory:').close(); require('sharp')"
+            - uses: actions/upload-artifact@v7
+              with:
+                  name: Labradorite-${{ matrix.target }}
+                  path: dist/Labradorite-${{ matrix.target }}.zip
+                  if-no-files-found: error
+                  compression-level: 0
+
+    upload-release:
+        needs: build
+        if: github.event_name == 'release'
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/download-artifact@v8
+              with:
+                  pattern: Labradorite-*
+                  merge-multiple: true
+                  path: packages
+            - name: Attach packages to the published release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  TAG: ${{ github.event.release.tag_name }}
+              run: gh release upload "$TAG" packages/*.zip --repo "$GITHUB_REPOSITORY" --clobber

@@ -7,7 +7,7 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
-import { loadRuntimeConfig } from "@/runtime-config.js";
+import { loadRuntimeConfig, openRuntimeConfig } from "@/runtime-config.js";
 test("setup discovers dimensions from a real request and keeps the working provider after a failed switch", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "labradorite-provider-"));
 	const service = createServer(async (req, res) => {
@@ -48,6 +48,7 @@ test("setup discovers dimensions from a real request and keeps the working provi
 		const path = join(dir, "runtime.json");
 		const saved = loadRuntimeConfig(path);
 		assert.equal(saved.embedding?.dimensions, 3);
+		assert.equal(saved.index_idle_minutes, 120);
 		await assert.rejects(
 			setup("--embedding", "ollama", "--model", "fixture"),
 			/未知的 embedding 模式/,
@@ -92,9 +93,19 @@ test("setup produces private runtime and usable stdio configuration without chan
 			max_requests_per_day: 0,
 			timeout_ms: 1000,
 		};
-		writeFileSync(path, JSON.stringify({ ...config, embedding }));
+		const { index_idle_minutes: _minutes, ...legacy } = config;
+		writeFileSync(path, JSON.stringify({ ...legacy, embedding }));
 		assert.equal(run().status, 0);
-		assert.deepEqual(loadRuntimeConfig(path).embedding, embedding);
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+			...legacy,
+			embedding,
+			index_idle_minutes: 0,
+		});
+		// A hand-written configuration for a fresh library has no installation artifacts.
+		rmSync(join(dir, "mcp.json"));
+		writeFileSync(path, JSON.stringify({ ...legacy, embedding }));
+		openRuntimeConfig(path);
+		assert.equal(loadRuntimeConfig(path).index_idle_minutes, 120);
 		writeFileSync(
 			path,
 			JSON.stringify({ ...config, embedding: { ...embedding, api_key: "not-permitted" } }),

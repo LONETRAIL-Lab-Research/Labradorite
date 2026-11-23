@@ -122,22 +122,62 @@ test("a proposed setting needs owner approval, evolves through review and can be
 		const world = (await call("memory_settings")).settings.find(
 			(s: { target: string }) => s.target === "world",
 		);
-		const locked = (
+		const request = {
+			...proposal,
+			operation_id: "new-festival",
+			base_seq: store.sequence(scope),
+			setting: {
+				id: world.id,
+				expected_version: world.version,
+				target: "world",
+				title: world.title,
+				body: "改为每周聚餐。",
+			},
+		};
+		const locked = (await call("memory_review", request)).change;
+		assert.equal(locked.state, "proposed");
+		assert.equal((await act(locked.version, "purge")).status, 409);
+		assert.equal((await act(locked.version, "reject")).status, 303);
+		const afterRejection = await call("memory_settings");
+		assert.deepEqual(afterRejection.owner_decisions, context.owner_decisions);
+		assert.deepEqual(
+			afterRejection.settings.find((s: { id: string }) => s.id === world.id),
+			world,
+		);
+		const rejectedPath = "/traits/" + locked.version;
+		assert.ok((await (await browser.get("/reviews")).text()).includes(rejectedPath));
+		const rejectedPage = await (await browser.get(rejectedPath)).text();
+		assert.ok(
+			rejectedPage.includes(request.setting.body) && rejectedPage.includes("确认永久删除"),
+		);
+		const retryRejected = async () => {
+			const result = await client.callTool({ name: "memory_review", arguments: request });
+			assert.equal(result.isError, true);
+			assert.deepEqual(JSON.parse((result.content as { text: string }[])[0]!.text), {
+				code: "NOT_FOUND",
+			});
+		};
+		await retryRejected();
+		const again = (
 			await call("memory_review", {
-				...proposal,
-				operation_id: "new-festival",
+				...request,
+				operation_id: "reconsider-festival",
 				base_seq: store.sequence(scope),
-				setting: {
-					id: world.id,
-					expected_version: world.version,
-					target: "world",
-					title: world.title,
-					body: "改为每周聚餐。",
-				},
 			})
 		).change;
-		assert.equal(locked.state, "proposed");
-		assert.equal((await act(locked.version, "reject")).status, 303);
+		assert.equal((await act(again.version, "reject")).status, 303);
+		const purge = await act(locked.version, "purge");
+		assert.equal(purge.status, 303);
+		assert.equal(purge.headers.get("location"), "/reviews");
+		assert.equal((await browser.get(rejectedPath)).status, 404);
+		assert.ok(!(await (await browser.get("/reviews")).text()).includes(rejectedPath));
+		await retryRejected();
+		assert.ok(
+			(await (await browser.get("/traits/" + again.version)).text()).includes(
+				request.setting.body,
+			),
+		);
+		assert.equal((await browser.get("/episode/" + episode.id)).status, 200);
 		assert.deepEqual(
 			store.settings.context({ ...config, world: "other" }).settings.map((r) => r.id),
 			[first.id],
@@ -147,17 +187,16 @@ test("a proposed setting needs owner approval, evolves through review and can be
 			.list(scope, 0)
 			.items.find((r) => r.episodeId === episode.id)!;
 		assert.equal(store.reviews.act(scope, eventReview.key, "undo"), 303);
-		const preview = store.previewDelete(scope, { source_ids: [source.id] });
-		assert.ok(
-			preview.setting_versions.includes(first.version) &&
-				preview.setting_versions.includes(locked.version),
-		);
+		const preview = await call("memory_preview_delete", { source_ids: [source.id] });
+		assert.ok(preview.setting_versions.includes(first.version));
+		assert.ok(!preview.setting_versions.includes(again.version));
 		store.delete("client", scope, {
 			source_ids: [source.id],
 			operation_id: "erase",
 			preview_token: preview.preview_token,
 		});
 		const remaining = await call("memory_settings");
+		assert.equal((await browser.get("/traits/" + again.version)).status, 404);
 		assert.equal(remaining.settings.length, 1);
 		assert.equal(remaining.settings[0].version, world.version);
 		assert.deepEqual(remaining.owner_decisions, []);

@@ -12,7 +12,13 @@ import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRuntimeConfig, type RuntimeConfig } from "@/runtime-config.js";
+import {
+	defaultIndexIdleMinutes,
+	loadRuntimeConfig,
+	openRuntimeConfig,
+	withRuntimeConfigLock,
+	type RuntimeConfig,
+} from "@/runtime-config.js";
 import { configureEmbedding } from "./setup-embedding.js";
 import { prepareDataDirectory } from "@/data-directory.js";
 
@@ -37,9 +43,10 @@ mkdirSync(directory, { recursive: true, mode: 0o700 });
 const configPath = join(directory, "runtime.json");
 const existing = existsSync(configPath);
 const runtime: RuntimeConfig = existing
-	? loadRuntimeConfig(configPath)
+	? openRuntimeConfig(configPath)
 	: {
 			database: join(directory, "memory-v2.db"),
+			index_idle_minutes: defaultIndexIdleMinutes,
 			space: "local",
 			character: "character",
 			world: "real",
@@ -56,8 +63,13 @@ if (!existing || previous !== JSON.stringify(runtime)) {
 			flag: "wx",
 		});
 		loadRuntimeConfig(temp);
-		if (existing) renameSync(temp, configPath);
-		else copyFileSync(temp, configPath, constants.COPYFILE_EXCL);
+		if (existing) {
+			withRuntimeConfigLock(configPath, () => {
+				if (JSON.stringify(loadRuntimeConfig(configPath)) !== previous)
+					throw new Error("运行配置已变更，请重新运行 setup。");
+				renameSync(temp, configPath);
+			});
+		} else copyFileSync(temp, configPath, constants.COPYFILE_EXCL);
 	} finally {
 		rmSync(temp, { force: true });
 	}

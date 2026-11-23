@@ -36,7 +36,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import { createReadStream, readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { loadRuntimeConfig } from "./runtime-config.js";
+import { loadRuntimeConfig, openRuntimeConfig } from "./runtime-config.js";
 import { defaultDataDirectory } from "./data-directory.js";
 import { MaterialError, MaterialStore, type Material } from "./storage/materials.js";
 import { indexReason, readIndexStatus } from "./retrieval/index-status.js";
@@ -95,7 +95,7 @@ async function sendPage(res: ServerResponse, view: VNode, status = 200) {
 	res.end("<!doctype html>" + html);
 }
 function openLibrary(path: string) {
-	const config = loadRuntimeConfig(path);
+	const config = openRuntimeConfig(path);
 	const db = new DatabaseSync(config.database, { readOnly: true });
 	const version = db.prepare("PRAGMA user_version").get()?.user_version;
 	try {
@@ -528,7 +528,9 @@ const server = createServer(async (req, res) => {
 								form.get("mode"),
 							);
 						}
-						res.writeHead(303, { location: url.pathname });
+						res.writeHead(303, {
+							location: action === "purge" ? "/reviews" : url.pathname,
+						});
 						res.end();
 						return;
 					}

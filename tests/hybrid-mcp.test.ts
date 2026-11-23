@@ -63,6 +63,7 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 				space: "test",
 				character: "reader",
 				world: "real",
+				index_idle_minutes: 120,
 				embedding: {
 					endpoint: `http://127.0.0.1:${address.port}/v1/embeddings`,
 					model: "fixture",
@@ -184,18 +185,46 @@ test("stdio MCP indexes through compatible HTTP embeddings and returns source-ba
 		};
 		await call("memory_review", { ...proposal, dry_run: true });
 		assert.equal(inputs.length, 3);
-		await call("memory_review", proposal);
+		const unrelated = (
+			await call("memory_submit", {
+				operation_id: "unrelated",
+				text: "周六在南门集合",
+				source_kind: "user_report",
+				speaker: "reader",
+				coverage: "消息",
+			})
+		).material;
+		proposal.base_seq = (await call("memory_status", {})).snapshot_seq;
+		const saved = await call("memory_review", proposal);
 		await vi.waitFor(async () =>
-			assert.equal((await call("memory_status", {})).retrieval.pending_chunks, 0),
+			assert.equal((await call("memory_status", {})).retrieval.embedded_chunks, 1),
 		);
 		assert.equal(inputs.length, 4);
+		assert.equal(inputs[3]!.length, 1);
+		assert.match(inputs[3]![0]!, /出发/);
+		assert.equal(
+			(await call("memory_recall", { query: "南门", mode: "lexical" })).items[0].id,
+			unrelated.id,
+		);
+		await call("memory_amend", {
+			operation_id: "amend-ride",
+			id: saved.episode.id,
+			expected_revision: 1,
+			base_seq: (await call("memory_status", {})).snapshot_seq,
+			summary: "改骑电动车",
+		});
+		await vi.waitFor(async () =>
+			assert.equal((await call("memory_status", {})).retrieval.embedded_chunks, 1),
+		);
+		assert.equal(inputs[4]!.length, 1);
+		assert.match(inputs[4]![0]!, /改骑电动车/);
 		const finish = await client.callTool({ name: "memory_review" });
 		assert.equal(finish.isError, false);
 		assert.equal(
 			JSON.parse((finish.content as { text: string }[])[0]!.text).indexing.state,
 			"completed",
 		);
-		assert.equal(inputs.length, 4);
+		assert.deepEqual(inputs[5], [fresh.text, unrelated.text]);
 	} finally {
 		releaseFirstBatch();
 		await client.close();

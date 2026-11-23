@@ -1,6 +1,8 @@
 import { validateEmbeddingConfig, type EmbeddingConfig } from "./providers/embedding.js";
-import { readFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 
 export interface RuntimeConfig {
 	database: string;
@@ -10,6 +12,47 @@ export interface RuntimeConfig {
 	space: string;
 	character: string;
 	world: string;
+}
+
+export const defaultIndexIdleMinutes = 120;
+
+export function indexIdleMinutes(config: RuntimeConfig) {
+	return config.index_idle_minutes ?? defaultIndexIdleMinutes;
+}
+
+export function withRuntimeConfigLock<T>(path: string, action: () => T): T {
+	const lock = new Database(path + ".lock");
+	try {
+		return lock.transaction(action).immediate();
+	} finally {
+		lock.close();
+	}
+}
+
+export function replaceRuntimeConfig(path: string, config: RuntimeConfig) {
+	const temp = path + "." + randomUUID() + ".tmp";
+	try {
+		writeFileSync(temp, JSON.stringify(config, null, "\t") + "\n", { flag: "wx", mode: 0o600 });
+		renameSync(temp, path);
+	} finally {
+		rmSync(temp, { force: true });
+	}
+}
+
+// One-release migration. Setup and restore now write an explicit default on creation.
+export function openRuntimeConfig(path: string): RuntimeConfig {
+	const config = loadRuntimeConfig(path);
+	if (config.index_idle_minutes !== undefined) return config;
+	return withRuntimeConfigLock(path, () => {
+		const current = loadRuntimeConfig(path);
+		if (current.index_idle_minutes === undefined) {
+			const installed =
+				existsSync(current.database) || existsSync(join(dirname(path), "mcp.json"));
+			current.index_idle_minutes = installed ? 0 : defaultIndexIdleMinutes;
+			replaceRuntimeConfig(path, current);
+		}
+		return current;
+	});
 }
 
 export function loadRuntimeConfig(path: string): RuntimeConfig {
@@ -39,9 +82,9 @@ export function loadRuntimeConfig(path: string): RuntimeConfig {
 	const idle = config.index_idle_minutes;
 	if (
 		idle !== undefined &&
-		(typeof idle !== "number" || !Number.isSafeInteger(idle) || idle < 1 || idle > 35791)
+		(typeof idle !== "number" || !Number.isSafeInteger(idle) || idle < 0 || idle > 35791)
 	)
-		throw new Error("index_idle_minutes must be an integer between 1 and 35791 minutes.");
+		throw new Error("index_idle_minutes must be an integer between 0 and 35791 minutes.");
 	if (!isAbsolute(config.database as string)) throw new Error("Database path must be absolute.");
 	for (const key of ["space", "character", "world"]) {
 		if (!/^[A-Za-z0-9_-]{1,128}$/.test(config[key] as string))

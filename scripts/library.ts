@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { loadRuntimeConfig } from "@/runtime-config.js";
+import { defaultIndexIdleMinutes, loadRuntimeConfig } from "@/runtime-config.js";
 import { checksum } from "@/storage/media.js";
 import { findPeople, readPerson } from "@/storage/profiles.js";
 import type { Material } from "@/storage/materials.js";
@@ -73,6 +73,7 @@ async function run() {
 			JSON.stringify(
 				{
 					database,
+					index_idle_minutes: defaultIndexIdleMinutes,
 					space: manifest.space,
 					character: manifest.character,
 					world: manifest.world,

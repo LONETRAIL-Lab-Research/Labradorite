@@ -15,7 +15,7 @@
 
 ## 角色与世界设定
 
-客户端开始角色对话时调用 `memory_settings({})`，将 `settings` 纳入本轮上下文。`owner_decisions` 单独返回主人拒绝或撤销过的模型判断。读取范围由运行配置决定；同一空间内角色设定跨世界生效，世界设定只在对应世界生效。
+客户端开始角色对话时调用 `memory_settings({})`，将 `settings` 纳入本轮上下文。`owner_decisions` 列出生效后又被主人撤销的模型变更。被拒绝的提案仅在查看器中可见。以后模型仍可根据经历，用新的操作 ID 提出同样的建议。读取范围由运行配置决定；同一空间内角色设定跨世界生效，世界设定只在对应世界生效。
 
 先保存或找到经历，再调用 `memory_review` 提议一条设定变化。例如：
 
@@ -29,11 +29,11 @@
 }
 ```
 
-用当前 `memory_status().snapshot_seq` 替换示例序号。修订时在 `setting` 中附上当前设定的 `id` 和 `expected_version`（取自 `memory_settings` 返回的 `version`）。`target` 可取 `character` 或 `world`。`dry_run: true` 只预览。新设定和主人维护的设定返回 `proposed`，经主人确认后生效；已有自主设定返回 `unreviewed` 并立即生效。一个请求处理一条设定，重试使用相同的操作 ID 和提案。确认、拒绝、修改权限和撤销在查看器中完成。删除来源时，预览的 `setting_versions` 包含将一并清除的派生设定版本。
+用当前 `memory_status().snapshot_seq` 替换示例序号。修订时在 `setting` 中附上当前设定的 `id` 和 `expected_version`（取自 `memory_settings` 返回的 `version`）。`target` 可取 `character` 或 `world`。`dry_run: true` 只预览。新设定和主人维护的设定返回 `proposed`，经主人确认后生效；已有自主设定返回 `unreviewed` 并立即生效。一个请求处理一条设定，重试使用相同的操作 ID 和提案。提案被拒绝后，重试原操作返回 `NOT_FOUND`。确认、拒绝、修改权限和撤销在查看器中完成。删除来源时，预览的 `setting_versions` 列出模型可见的受影响设定版本。执行删除也会清理依赖该来源的已拒绝提案。
 
 ## 检索与索引
 
-启用 embedding 后，memory_review 成功保存经历或人物回顾就会触发后台索引。预览和无效提案不会触发。memory_review({}) 或省略 arguments 表示直接结束回顾并触发当前作用域的索引，不写入经历。最多等待 1 秒，已结束时返回 indexing.state（completed、disabled 或 stopped），停止原因见 indexing.reason。仍在运行时返回 running，后台继续索引；通过 memory_status 的 retrieval.pending_chunks 查看剩余片段数，retrieval.indexing 查看任务状态和原因。MCP 空闲计时从服务启动或最后一个并发工具调用结束时开始，默认 120 分钟，可用 runtime.json 的 index_idle_minutes 调整。空闲任务遇到工具调用会在批次边界暂停，回顾触发的索引持续至完成或遇到错误。索引会将待处理的原文和经历片段发送到配置的 embedding 服务，受每日请求预算约束。memory_recall 默认 hybrid，有可用向量时发送查询文本；mode=lexical、空查询或没有已完成向量时不发送查询文本。
+启用 embedding 且自动索引开启时，保存或修订经历（memory_review、memory_amend）只为本次写入的经历版本建立向量。仅更新人物或设定、预览和幂等重放均不会启动该任务。原材料立即可用全文检索，等待空闲或显式补建时生成向量。memory_review({}) 或省略 arguments 表示直接结束回顾并触发当前作用域的索引，不写入经历。最多等待 1 秒，已结束时返回 indexing.state（completed、disabled 或 stopped），停止原因见 indexing.reason。仍在运行时返回 running，后台继续索引；通过 memory_status 的 retrieval.pending_chunks 查看剩余片段数，retrieval.indexing 查看任务状态和原因。MCP 空闲计时从服务启动或最后一个并发工具调用结束时开始，新安装默认 120 分钟。runtime.json 的 index_idle_minutes 设为 0 时，空闲和保存回顾都不触发索引，显式调用 memory_review({}) 仍可手动建索引。空闲任务遇到工具调用会在批次边界暂停，回顾触发的索引持续至完成或遇到错误。索引会将待处理的原文和经历片段发送到配置的 embedding 服务，受每日请求预算约束。memory_recall 默认 hybrid，有可用向量时发送查询文本；mode=lexical、空查询或没有已完成向量时不发送查询文本。
 
 支持 kind、review_status、channel、thread 与时间窗过滤。channel 只匹配材料报告渠道；thread 精确匹配材料或经历标签；这些都不是访问权限。时间窗可选择 received_at、authored_at、review 或 happen（查询边界包含在内）；经历在 received_at 模式使用 review，authored_at 窗口不猜测经历发生时间。review 和 happen 仅选择经历。未知撰写时间不补填接收时间。
 
