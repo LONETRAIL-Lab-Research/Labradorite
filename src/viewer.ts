@@ -528,7 +528,9 @@ const server = createServer(async (req, res) => {
 								form.get("mode"),
 							);
 						}
-						res.writeHead(303, { location: url.pathname });
+						res.writeHead(303, {
+							location: action === "purge" ? "/reviews" : url.pathname,
+						});
 						res.end();
 						return;
 					}

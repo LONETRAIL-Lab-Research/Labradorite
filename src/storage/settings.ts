@@ -62,9 +62,7 @@ export class SettingLog {
 		return {
 			settings: effectiveSettings(history).map(describe),
 			owner_decisions: history
-				.filter(
-					(r) => r.author === "model" && (r.state === "rejected" || r.state === "undone"),
-				)
+				.filter((r) => r.author === "model" && r.state === "undone")
 				.map((r) => ({ ...describe(r), decision: r.state })),
 		};
 	}
@@ -101,6 +99,12 @@ export class SettingLog {
 				const rows = this.history(scope);
 				const row = rows.find((r) => r.version === version);
 				if (!row) throw new MaterialError("NOT_FOUND");
+				if (action === "purge") {
+					if (row.state !== "rejected") throw new MaterialError("REVISION_CONFLICT");
+					this.erase(scope, [version]);
+					this.db.prepare("UPDATE spaces SET seq=seq+1 WHERE id=?").run(scope.space);
+					return;
+				}
 				const active = effectiveSettings(rows).find((r) => r.id === row.id);
 				switch (action) {
 					case "approve":
@@ -139,15 +143,18 @@ export class SettingLog {
 	// Removing a source must also erase derived text in later versions, including rejected drafts.
 	affected(scope: MemoryScope, episodes: Set<string>, sources: Set<string>) {
 		const versions = new Set<string>();
+		const visibleVersions: string[] = [];
 		for (const row of this.history(scope).reverse()) {
 			if (
 				(row.base && versions.has(row.base)) ||
 				row.episodes.some((e) => episodes.has(e.id)) ||
 				row.source_ids.some((id) => sources.has(id))
-			)
+			) {
 				versions.add(row.version);
+				if (row.state !== "rejected") visibleVersions.push(row.version);
+			}
 		}
-		return [...versions];
+		return { versions: [...versions], visibleVersions };
 	}
 
 	erase(scope: MemoryScope, versions: string[]) {

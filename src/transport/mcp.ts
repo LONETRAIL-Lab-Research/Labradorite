@@ -55,7 +55,7 @@ export function createMemoryServer(memory: {
 			{
 				name: "memory_settings",
 				description:
-					"Read effective character and world settings at the start of a conversation. owner_decisions lists rejected or undone judgments separately. To propose a new setting or a change, use memory_review with setting, reason and cited episode versions. Only the owner can approve proposals and choose autonomy in the viewer.",
+					"Read effective character and world settings at the start of a conversation. owner_decisions lists previously effective model changes that the owner later undid. To propose a new setting or a change, use memory_review with setting, reason and cited episode versions. Only the owner can approve proposals and choose autonomy in the viewer.",
 				inputSchema: {
 					type: "object" as const,
 					properties: {},

@@ -90,4 +90,12 @@ const isCurrent = props.row.version === props.current?.version;
 		</details>
 	</template>
 	<p v-else-if="current"><a :href="'/traits/' + current.version">查看当前生效版本</a></p>
+	<details v-if="row.state === 'rejected'">
+		<summary>永久删除这条提案</summary>
+		<p>将从本库清除这条提案的内容、理由和经历引用。删除后无法在查看器中恢复。</p>
+		<form method="post">
+			<input type="hidden" name="selection" :value="selection" />
+			<button name="action" value="purge">确认永久删除</button>
+		</form>
+	</details>
 </template>

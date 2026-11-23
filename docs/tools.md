@@ -15,7 +15,7 @@
 
 ## 角色与世界设定
 
-客户端开始角色对话时调用 `memory_settings({})`，将 `settings` 纳入本轮上下文。`owner_decisions` 单独返回主人拒绝或撤销过的模型判断。读取范围由运行配置决定；同一空间内角色设定跨世界生效，世界设定只在对应世界生效。
+客户端开始角色对话时调用 `memory_settings({})`，将 `settings` 纳入本轮上下文。`owner_decisions` 列出生效后又被主人撤销的模型变更。被拒绝的提案仅在查看器中可见。以后模型仍可根据经历，用新的操作 ID 提出同样的建议。读取范围由运行配置决定；同一空间内角色设定跨世界生效，世界设定只在对应世界生效。
 
 先保存或找到经历，再调用 `memory_review` 提议一条设定变化。例如：
 
@@ -29,7 +29,7 @@
 }
 ```
 
-用当前 `memory_status().snapshot_seq` 替换示例序号。修订时在 `setting` 中附上当前设定的 `id` 和 `expected_version`（取自 `memory_settings` 返回的 `version`）。`target` 可取 `character` 或 `world`。`dry_run: true` 只预览。新设定和主人维护的设定返回 `proposed`，经主人确认后生效；已有自主设定返回 `unreviewed` 并立即生效。一个请求处理一条设定，重试使用相同的操作 ID 和提案。确认、拒绝、修改权限和撤销在查看器中完成。删除来源时，预览的 `setting_versions` 包含将一并清除的派生设定版本。
+用当前 `memory_status().snapshot_seq` 替换示例序号。修订时在 `setting` 中附上当前设定的 `id` 和 `expected_version`（取自 `memory_settings` 返回的 `version`）。`target` 可取 `character` 或 `world`。`dry_run: true` 只预览。新设定和主人维护的设定返回 `proposed`，经主人确认后生效；已有自主设定返回 `unreviewed` 并立即生效。一个请求处理一条设定，重试使用相同的操作 ID 和提案。提案被拒绝后，重试原操作返回 `NOT_FOUND`。确认、拒绝、修改权限和撤销在查看器中完成。删除来源时，预览的 `setting_versions` 列出模型可见的受影响设定版本。执行删除也会清理依赖该来源的已拒绝提案。
 
 ## 检索与索引
 
